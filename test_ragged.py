@@ -8,118 +8,10 @@ from stompy import utils
 
 ##
 six.moves.reload_module(quads)
-gen=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v01.pkl')
-
-# the grid at this point is super f'd
-plt.figure(1).clf()
-gen.plot_edges()
-gen.plot_nodes(labeler=lambda i,r: f"{r['i']},{r['j']}")
-
-##
-gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v01.pkl')
-
-qg=quads.QuadGen(gen_src,cell=0,anisotropic=False,execute=False,nom_res=3)
-
-# qg.gen.nodes now has IJ
-# qg.execute()
-# def create_intermediate_grid(self,
-
-src='IJ'
-coordinates='xy'
-
-# target grid
-g=unstructured_grid.UnstructuredGrid(max_sides=4,
-                                     extra_node_fields=[('ij',np.float64,2),
-                                                        ('gen_j',np.int32),
-                                                        ('rigid',np.int32)])
-gen=qg.gen
-for c in gen.valid_cell_iter():
-    break
-
-local_edges=gen.cell_to_edges(c,ordered=True)
-flip=(gen.edges['cells'][local_edges,0]!=c)
-
-edge_nodes=gen.edges['nodes'][local_edges]
-edge_nodes[flip,:] = edge_nodes[flip,::-1]
-
-dijs=gen.edges['d'+src][local_edges] * ((-1)**flip)[:,None]
-xys=gen.nodes['x'][edge_nodes[:,0]]
-ij0=gen.nodes[src][edge_nodes[0,0]]
-ijs=np.cumsum(np.vstack([ij0,dijs]),axis=0)
-
-# Sanity check to be sure that all the dijs close the loop.
-assert np.allclose( ijs[0],ijs[-1] )
-
-ijs=np.array(ijs[:-1])
-# Actually don't, so that g['ij'] and gen['ij'] match up.
-ij0=ijs.min(axis=0)
-ijN=ijs.max(axis=0)
-ij_size=ijN-ij0
-
-# Create in ij space
-patch=g.add_rectilinear(p0=ij0,
-                        p1=ijN,
-                        nx=int(1+ij_size[0]),
-                        ny=int(1+ij_size[1]))
-pnodes=patch['nodes'].ravel()
-
-g.nodes['gen_j'][pnodes]=-1
-
-# Copy xy to ij, then optionally remap xy
-g.nodes['ij'][pnodes] = g.nodes['x'][pnodes]
-
-##
-
-# What does this look like in IJ space?
-# Is there a case where the xy triangulation would become
-# invalid in IJ space?
-# Could easily have a kink in xy that gets a local triangle,
-# and that becomes flat/degenerate in IJ.
-
-
-plt.figure(1).clf()
-fig,axs=plt.subplots(2,1,num=1)
-gen.plot_edges(ax=axs[0],lw=2,color='k')
-
-axs[1].plot(ijs[:,0],ijs[:,1],'k-',lw=2,label='gen IJ')
-
-axs[1].plot( gen.nodes['IJ'][:,0], gen.nodes['IJ'][:,1], 'r.')
-# Create a triangulation in IJ space:
-from stompy.grid import exact_delaunay
-six.moves.reload_module(exact_delaunay)
-tri_ij=exact_delaunay.Triangulation()
-tri_ij.init_from_grid(gen,'IJ')
-
-tri_ij.plot_edges(ax=axs[1])
-
-tri_xy=exact_delaunay.Triangulation()
-tri_xy.init_from_grid(gen,'x',set_valid=True)
-tri_xy.plot_edges(ax=axs[0])
-for ax in axs:
-    ax.axis('tight')
-    ax.axis('equal')
-tri_xy_ij=tri_xy.copy()
-tri_xy_ij.nodes['x']=gen.nodes['IJ']
-to_delete=(~tri_xy_ij.cells['valid'])&(~tri_xy_ij.cells['deleted'])
-for c in np.nonzero( to_delete )[0]:
-    tri_xy_ij.delete_cell(c)
-
-tri_xy_ij.delete_orphan_edges()
-tri_xy_ij.delete_orphan_nodes()
-tri_xy_ij.renumber()
-tri_xy_ij.plot_edges(ax=axs[1],color='g')
-
-## 
-# Delete cells outside the original grid.
-
-# Convert the xy triangulation to IJ space.
-
-## -------------------------------
 
 # Go back to solving on a fully unstructured triangular grid, so construction
 # is easier
 
-six.moves.reload_module(quads)
 from stompy.grid import triangulate_hole
 
 # v00 has a ragged edge.
@@ -137,7 +29,7 @@ g=unstructured_grid.UnstructuredGrid(max_sides=4,
                                      extra_node_fields=[ ('ij',np.float64,2) ])
 g.nodes['ij']=np.nan
 
-res=10.0
+res=6.0
 src='IJ'
 for j in gen.valid_edge_iter():
     # Just to get the length
@@ -168,10 +60,10 @@ plt.figure(1).clf()
 g.plot_edges(values=g.edges['gen_j'],cmap='rainbow')
 g.plot_nodes(marker='.')
 
-
 seed=gen.cells_centroid()[0]
 # This will suffice for now.  Probably can use something
 # less intense.
+g.node_defaults['ij']=np.nan
 gnew=triangulate_hole.triangulate_hole(g,seed_point=seed,hole_rigidity='all')
 
 plt.figure(1).clf()
@@ -182,25 +74,79 @@ g.plot_nodes(mask=np.isfinite(g.nodes['ij'][:,0]),
              labeler=lambda i,r: f"{r['ij'][0]:.2f},{r['ij'][1]:.2f}")
 
 
-## 
-# Rather than the finite difference approach, is there a boxed up FEM
-# way I could solve the laplacian?
+##
+# i_tan_groups has node 139 in two different groups.  bad.
+# node 139 is the last in the bcycle, and also n1 on the
+# first go through
+six.moves.reload_module(quads)
+qg=quads.QuadGen(gen_src,cell=0,anisotropic=False,execute=False,
+                 gradient_scale=1.0)
+
+gen=qg.gen
+qg.add_bezier(gen)
 
 # First, use this grid and my existing method
 qg.g_int=gnew
+
 qg.calc_psi_phi()
-qg.plot_psi_phi()
-
-# 
-# Trouble -- how are my edges getting off?
-# BCs or something are messed up?
-# Is the problem that I'm not specify corners as rigid?
-# g.nodes['rigid'][n]=RIGID
-# But that's not used later...
-# Maybe this provides some clues on DOF
+qg.plot_psi_phi(thinning=0.5)
+plt.axis( (552313.3506335834, 552414.4919506207, 4124365.0316236005, 4124468.394946426) )
 
 
+# HERE -
+# Finally have a nice psi/phi field.
+# 1. Move the above triangulation logic into quad_laplacian as an option.
+# 2. See if that resolves the issue with north channel, and finish the interpolation.
+# 3. Come back to here and see if I can finish a quad grid with a ragged edge
 
+##
+
+# Use nd just to see what the gradients look like
+# Looks entirely reasonable
+gtri=gnew
+
+nd=quads.NodeDiscretization(gnew)
+
+bcycle=gtri.boundary_cycle()
+
+grad_psi=np.zeros( (len(bcycle),2), np.float64)
+grad_phi=np.zeros( (len(bcycle),2), np.float64)
+
+for ni,n in enumerate(bcycle):
+    dx_nodes,dx_coeffs,rhs=nd.node_dx(n)
+    dy_nodes,dy_coeffs,rhs=nd.node_dy(n)
+
+    grad_psi[ni,0] = (qg.psi[dx_nodes]*dx_coeffs).sum()
+    grad_psi[ni,1] = (qg.psi[dy_nodes]*dy_coeffs).sum()
+
+    grad_phi[ni,0] = (qg.phi[dx_nodes]*dx_coeffs).sum()
+    grad_phi[ni,1] = (qg.phi[dy_nodes]*dy_coeffs).sum()
+
+
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+gnew.plot_edges(lw=0.3,ax=ax)
+
+grad_psi=utils.to_unit(grad_psi)
+
+bc_grad_psi,bc_grad_phi=qg.calc_bc_gradients(gtri)
+
+if 1: # show psi, internal and BC
+    ax.quiver( gnew.nodes['x'][bcycle,0], gnew.nodes['x'][bcycle,1],
+               grad_psi[:,0], grad_psi[:,1],color='b')
+
+    bc_grad=np.array( [bc_grad_psi[n] for n in bcycle] )
+        
+    ax.quiver( gnew.nodes['x'][bcycle,0], gnew.nodes['x'][bcycle,1],
+               bc_grad[:,0],bc_grad[:,1],
+               color='tab:green')
+if 0:
+    ax.quiver( gnew.nodes['x'][:,0], gnew.nodes['x'][:,1],
+               grad_phi[:,0], grad_phi[:,1],color='red')
+    ax.quiver(xys[:,0],xys[:,1], bc_grad_phi[:,0], bc_grad_phi[:,1], color='tab:orange')
+
+##
+# Maybe the failures of lagoon-v01 provide some clues on DOF
 
 ## Revert to quad intermediate:
 
@@ -223,6 +169,10 @@ nodes=[119,149]
 
 ## 
 # sfepy is promising.
+# but scikit-fem is more my speed.  pure python, and should be enough for a simple problem
+# like this.
 
 plt.figure(1).clf()
 gnew.plot_edges()
+
+## 
