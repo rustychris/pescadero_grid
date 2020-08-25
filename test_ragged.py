@@ -5,93 +5,148 @@ import matplotlib.pyplot as plt
 import six
 from stompy import utils
 
-
 ##
-six.moves.reload_module(quads)
-
-# Go back to solving on a fully unstructured triangular grid, so construction
-# is easier
-
-from stompy.grid import triangulate_hole
 
 # v00 has a ragged edge.
-# v01 makes that right.
+# v01 makes that a right. angle
+six.moves.reload_module(quads)
+
 gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v00.pkl')
 
-qg=quads.QuadGen(gen_src,cell=0,anisotropic=False,execute=False,
+# hmm - failed??  try nom res 5
+# Okay, but one node is corrupted.
+qg=quads.QuadGen(gen_src,cell=0,final='anisotropic',execute=True,nom_res=5,
                  gradient_scale=1.0)
 
-gen=qg.gen
-qg.add_bezier(gen)
+# gen=qg.gen
+# qg.add_bezier(gen)
+# qg.g_int=qg.create_intermediate_grid_tri(src='IJ')
+# 
+# qg.calc_psi_phi()
+# qg.plot_psi_phi(thinning=0.5)
+# plt.axis( (552313.3506335834, 552414.4919506207, 4124365.0316236005, 4124468.394946426) )
+qg.plot_result()
 
-g=unstructured_grid.UnstructuredGrid(max_sides=4,
-                                     extra_edge_fields=[ ('gen_j',np.int32) ],
-                                     extra_node_fields=[ ('ij',np.float64,2) ])
-g.nodes['ij']=np.nan
+##
 
-res=6.0
-src='IJ'
-for j in gen.valid_edge_iter():
-    # Just to get the length
-    points=qg.gen_bezier_linestring(j=j,samples_per_edge=10,span_fixed=False)
-    dist=utils.dist_along(points)[-1]
-    N=max( 4, int(dist/res))
-    points=qg.gen_bezier_linestring(j=j,samples_per_edge=N,span_fixed=False)
+# HERE
+# Derive a 'proper' IJ field by looking at psi/phi.  I.e. IJ=some scaling of psi/phi
+# at the fixed nodes.
+# Try cubic interpolation?
 
-    # Figure out what IJ to assign:
-    ij0=gen.nodes[src][gen.edges['nodes'][j,0]]
-    ijN=gen.nodes[src][gen.edges['nodes'][j,1]]
-
-    nodes=[]
-    for p_i,p in enumerate(points):
-        n=g.add_or_find_node(x=p,tolerance=0.1)
-        alpha=p_i/(len(points)-1.0)
-        assert alpha>=0
-        assert alpha<=1
-        ij=(1-alpha)*ij0 + alpha*ijN
-        g.nodes['ij'][n]=ij
-        nodes.append(n)
-        
-    for a,b in zip(nodes[:-1],nodes[1:]):
-        g.add_edge(nodes=[a,b],gen_j=j)
-    
-plt.figure(1).clf()
-
-g.plot_edges(values=g.edges['gen_j'],cmap='rainbow')
-g.plot_nodes(marker='.')
-
-seed=gen.cells_centroid()[0]
-# This will suffice for now.  Probably can use something
-# less intense.
-g.node_defaults['ij']=np.nan
-gnew=triangulate_hole.triangulate_hole(g,seed_point=seed,hole_rigidity='all')
-
-plt.figure(1).clf()
-
-g.plot_edges(values=g.edges['gen_j'],cmap='rainbow')
-
-g.plot_nodes(mask=np.isfinite(g.nodes['ij'][:,0]),
-             labeler=lambda i,r: f"{r['ij'][0]:.2f},{r['ij'][1]:.2f}")
 
 
 ##
-# i_tan_groups has node 139 in two different groups.  bad.
-# node 139 is the last in the bcycle, and also n1 on the
-# first go through
-six.moves.reload_module(quads)
-qg=quads.QuadGen(gen_src,cell=0,anisotropic=False,execute=False,
-                 gradient_scale=1.0)
+# Updating the logic when g_int is triangular, and we adjust a quad output
+# For the moment, that's an isotropic quad output
+self=qg
+self.g_final=self.create_intermediate_grid_quad(src='IJ',coordinates='ij')
+# this looks fine -- it's in IJ space, 16 units wide, 81 long, has the
+# taper.  nice.
+# I: [0,16]
+# J: [0,81]
 
-gen=qg.gen
-qg.add_bezier(gen)
+plt.figure(3).clf()
+self.g_final.plot_edges(color='k',lw=0.5)
+plt.axis('equal')
 
-# First, use this grid and my existing method
-qg.g_int=gnew
+g=self.g_final
+src='IJ'
+#-------------------
+# def adjust_by_psi_phi(self,g,update=True,src='ij'):
+#     """
+#     Move internal nodes of g according to phi and psi fields
+# 
+#     update: if True, actually update g, otherwise return the new values
+# 
+#     g: The grid to be adjusted. Must have nodes['ij'] filled in fully.
+# 
+#     src: the ij coordinate field in self.gen to use.  Note that this needs to be
+#       compatible with the ij coordinate field used to create g.
+#     """
+# Check to be sure that src and g['ij'] are approximately compatible.
+assert np.allclose( g.nodes['ij'].min(), self.gen.nodes[src].min() )
+assert np.allclose( g.nodes['ij'].max(), self.gen.nodes[src].max() )
 
-qg.calc_psi_phi()
-qg.plot_psi_phi(thinning=0.5)
-plt.axis( (552313.3506335834, 552414.4919506207, 4124365.0316236005, 4124468.394946426) )
+map_ij_to_pp = self.psiphi_to_ij(self.gen,self.g_int,inverse=True,src=src)
 
+# Calculate the psi/phi values on the nodes of the target grid
+g_psiphi=map_ij_to_pp( g.nodes['ij'] ) # had a bug there..
+
+
+# Use self.g_int to go from phi/psi to x,y
+# I think this is where it goes askew.
+# This maps {psi,phi} space onto {x,y} space.
+# But psi,phi is close to rectilinear, and defined on a rectilinear
+# grid.  Whenever some g_psi or g_phi is close to the boundary,
+# the Delaunay triangulation is going to make things difficult.
+interp_xy=utils.LinearNDExtrapolator( np.c_[self.psi,self.phi],
+                                      self.g_int.nodes['x'],
+                                      eps=None)
+# Save all the pieces for debugging:
+self.interp_xy=interp_xy
+self.interp_domain=np.c_[self.psi,self.phi]
+self.interp_image=self.g_int.nodes['x']
+self.interp_tgt=g_psiphi
+
+new_xy=interp_xy( g_psiphi )
+
+new_xy[np.isnan(new_xy)]=0.0 # DEV
+
+#if update:
+if True:
+    g.nodes['x']=new_xy
+    g.refresh_metadata()
+#else:
+#    return new_xy
+#--------------------
+
+
+# adjust_by_psi_phi(self,self.g_final,src='IJ')
+## 
+plt.figure(2).clf()
+self.g_final.plot_edges(color='k',lw=0.5)
+
+i_psi=map_ij_to_pp.__defaults__[0]
+j_phi=map_ij_to_pp.__defaults__[1]
+
+g.contour_node_values(g_psiphi[:,0],i_psi[:,1],colors='tab:red',linestyles='solid')
+g.contour_node_values(g_psiphi[:,1],j_phi[::-1,1],colors='tab:green',linestyles='solid')
+
+# Plot the nodes of gen that are providing these:
+coord=0 # i/psi
+gen=self.gen
+gen_valid=(~gen.nodes['deleted'])&(gen.nodes[src+'_fixed'][:,coord])
+gen.plot_nodes(mask=gen_valid,color='k',
+               labeler=lambda i,r: f"{gen.nodes['IJ'][i,coord]}")
+gen.plot_edges(color='k',lw=0.4)
+
+# One issue is that IJ has the ragged part as half of the total
+# width, while it "should" be smaller.
+# but this 
+
+all_coord=gen.nodes[src][gen_valid,coord]
+
+plt.plot( new_xy[:,0],new_xy[:,1], 'g.')
+
+plt.axis('equal')
+
+
+## 
+map_ij_to_pp = self.psiphi_to_ij(self.gen,self.g_int,inverse=True)
+
+
+##
+self.adjust_by_psi_phi(self.g_final, src='IJ')
+ij=self.remap_ij(self.g_final,src='ij')
+self.g_final.nodes['ij']=ij
+
+
+#   self.g_final=self.g_int.copy()
+#   self.adjust_by_psi_phi(self.g_final, src='IJ')
+#   # but update ij to reflect the 'ij' in the original input.
+#   ij=self.remap_ij(self.g_final,src='ij')
+#   self.g_final.nodes['ij']=ij
 
 # HERE -
 # Finally have a nice psi/phi field.
