@@ -22,6 +22,7 @@ six.moves.reload_module(quads)
 gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v00.pkl')
 
 from stompy.grid import rebay
+six.moves.reload_module(rebay)
 
         
 gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v00.pkl')
@@ -46,14 +47,16 @@ rad=rebay.RebayAdvancingDelaunay(grid=gsmooth,scale=scale,
 
 rad.execute()
 
-# Starting point: 8s
-# 4.2s in edge_to_cells
-# Don't ask for full updates -- still runs okay
-# and now it's 4.4s.
-# 2.1s of that is in add_node().  So exact_delaunay stuff.
-# still have 1.2s in edge to cells.
-# must be some internal call?
+g=rad.extract_result()
 
 ##
 
-rad.plot_progress()
+plt.figure(1).clf()
+g.plot_edges(color='k',lw=0.5)
+g.plot_cells(color='tab:orange',alpha=0.5)
+
+# HERE: offer this as an option in triangulate hole.
+
+##
+
+
