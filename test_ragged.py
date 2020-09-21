@@ -566,7 +566,7 @@ if 1: # Swath processing
             comp_cells=np.nonzero(labels==comp)[0]
             add_swath_contours_new(comp_cells,node_field,coord,field_extrap)
 
-#
+## 
 
 # Plot the contours to check visually before working up patch-construction
 # code.
@@ -594,6 +594,131 @@ for c in g_final2.valid_cell_iter():
 ax.axis('equal')
 
 ##
+
+# Direct grid gen from contour specifications:
+
+# rough implementation:
+extraps=[ utils.LinearNDExtrapolator( g_int.nodes['x'], qg.psi),
+          utils.LinearNDExtrapolator( g_int.nodes['x'], qg.phi) ]
+def pp_to_xy(pp,x0):
+    def cost(x,extraps):
+        return ((extraps[0](x)-pp[0])**2 + (extraps[1](x)-pp[1])**2).sum()
+    best=fmin(cost,x0,args=(extraps,),disp=False)
+    return best
+
+@utils.add_to(g_int)
+def fields_to_xy(self,target,node_fields,x0):
+    """
+    target: values of node_fields to locate
+    x0: starting point
+
+    NB: edges['cells'] must be up to date before calling
+    """
+    c=self.select_cells_nearest(x0)
+
+    while 1:
+        c_nodes=self.cell_to_nodes(c)
+        M=np.array( [ node_fields[0][c_nodes],
+                        node_fields[1][c_nodes],
+                        [1,1,1] ] )
+        b=[target[0],target[1],1.0]
+
+        weights=np.linalg.solve(M,b)
+        if min(weights)<0: # not there yet.
+            min_w=np.argmin(weights)
+            c_edges=self.cell_to_edges(c,ordered=True)# nodes 0--1 is edge 0, ...
+            sel_j=c_edges[ (min_w+1)%(len(c_edges)) ]
+            edges=self.edges['cells'][sel_j]
+            if edges[0]==c:
+                next_c=edges[1]
+            elif edges[1]==c:
+                next_c=edges[0]
+            else:
+                raise Exception("Fail.")
+            if next_c<0:
+                if weights.min()<-1e-5:
+                    print("Left triangulation (min weight: %f)"%weights.min())
+                    import pdb
+                    pdb.set_trace()
+                # Clip the answer to be within this cell (will be on an edge
+                # or node).
+                weights=weights.clip(0)
+                weights=weights/weights.sum()
+                break
+            c=next_c
+            continue
+        else:
+            break
+    x=(self.nodes['x'][c_nodes]*weights[:,None]).sum(axis=0)
+    return x
+
+patch_grids=[]
+
+g_int.edge_to_cells()
+
+for c in utils.progress(g_final2.valid_cell_iter()):
+    psi_cvals=patch_to_contour[1][c]
+    phi_cvals=patch_to_contour[0][c]
+    
+    g_patch=unstructured_grid.UnstructuredGrid(max_sides=4)
+    g_patch.add_rectilinear( [0,0], [len(psi_cvals)-1,len(phi_cvals)-1],
+                             len(psi_cvals),len(phi_cvals))
+    g_patch.add_node_field( 'ij', g_patch.nodes['x'].astype(np.int32))
+    pp=np.c_[ psi_cvals[g_patch.nodes['ij'][:,0]],
+              phi_cvals[g_patch.nodes['ij'][:,1]] ]
+    g_patch.add_node_field( 'pp', pp)
+
+    x0=g_final2.cells_centroid([c])[0]
+    for n in g_patch.valid_node_iter():
+        x=g_int.fields_to_xy(g_patch.nodes['pp'][n],
+                             node_fields=[qg.psi,qg.phi],
+                             x0=x0)
+        g_patch.nodes['x'][n]=x
+        # Hmm -
+        # When it works, this probably reduces the search time considerably,
+        # but there is the possibility, particularly at corners, that
+        # this x will be a corner, that corner will lead to the cell *around*
+        # the corner, and then we get stuck.
+        # Even the centroid isn't great since it might not even fall inside
+        # the cell.
+        # x0=x 
+    patch_grids.append(g_patch)
+
+##
+
+# c=14, some of it looks great, some not so much.
+
+g=patch_grids[0]
+for g_next in patch_grids[1:]:
+    g.add_grid(g_next,merge_nodes='auto')
+
+##
+
+plt.figure(4).clf()
+fig,ax=plt.subplots(num=4)
+g.plot_edges(color='k',lw=0.5)
+g.plot_cells(color='0.8',lw=0,zorder=-2)
+ax.axis('off')
+ax.set_position([0,0,1,1])
+
+## 
+# This is the result for one of the bad nodes:
+bad_xy=[552518.562916275, 4124197.347880902]
+bad_n=g_patch.select_nodes_nearest(bad_xy)
+
+g_patch.plot_nodes(mask=[bad_n],color='k')
+bad_ij=g_patch.nodes['ij'][bad_n] # 1,1
+
+tgt_pp=psi_cvals[bad_ij[0]],phi_cvals[bad_ij[1]]
+x=g_patch.nodes['x'][bad_n]
+ans_pp=extraps[0](x),extraps[1](x) # actually very close.
+
+# Where I wanted it:
+exp_x=[552479.679184539, 4124259.167987721]
+exp_pp=extraps[0](exp_x),extraps[1](exp_x)
+
+##
+
 if 0: # Older postprocessing
     # -- 
 
