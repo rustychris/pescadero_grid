@@ -9,10 +9,14 @@ import six
 from stompy import utils,filters
 import numpy as np
 from scipy import sparse
+
+
 from scipy.optimize import fmin
 import stompy.plot.cmap as scmap
 from shapely import ops
 turbo=scmap.load_gradient('turbo.cpt')
+cmap=scmap.load_gradient('oc-sst.cpt')
+
 ##
 
 # v00 has a ragged edge.
@@ -43,14 +47,17 @@ six.moves.reload_module(quads)
 
 qg=quads.QuadGen(gen_src,cell=0,final='anisotropic',execute=False,nom_res=5)
 
-# plt.figure(2).clf()
-# qg.gen.plot_edges()
-# qg.gen.plot_nodes(labeler='id')
-
 qg.add_internal_edge([23,36])
 qg.add_internal_edge([20,32])
 
 qg.execute()
+
+# All the code below is now in quad_laplacian.py
+
+
+
+
+## 
 
 # Using the tan_groups, set the values to be exact
 for i_grp in qg.i_tan_groups:
@@ -60,18 +67,6 @@ for j_grp in qg.j_tan_groups:
     grp_phi=qg.phi[j_grp].mean()
     qg.phi[j_grp]=grp_phi
     
-# rebay was filling in the sting with an extra, invalid edge.
-# this is maybe fixed by retaining the constraints, though
-# that may bring new issues down the road.
-
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
-ax.set_position([0,0,1,1])
-ax.axis('off')
-
-# qg.plot_psi_phi(ax=ax)
-qg.g_int.plot_edges(lw=0.5,color='k',alpha=0.3)
-
 # This code assumes that either ij are both fixed, or neither fixed.
 fixed_int_to_gen={}
 for n in qg.g_int.valid_node_iter():
@@ -89,23 +84,6 @@ for n in qg.g_int.valid_node_iter():
 n_fixed=list(fixed_int_to_gen.keys())
     
 qg.g_int.plot_nodes(mask=n_fixed, color='tab:red', ax=ax)
-
-# Thoughts on how to create the quad grid --
-#  Can't rely on anything in ij space.
-# Visit nodes with rigid i/j in the intermediate grid.
-#   - for any fixed coordinate, trace a contour.
-#     currently there is not an indication of fixed.
-#     When the fixed coordinate corresponds to a boundary
-#     edge (can probably used g_int.nodes['ij'] to figure
-#     that out), then pull the exact boundary edge.
-#     Otherwise, trace the contour in 1 [or 2] directions,
-
-# These edges then have to get intersected to find internal
-# nodes.
-
-# For contours that have global fixed nodes in multiple locations:
-# two different directions?  For the moment disregard that
-# issue.
 
 ## Join
 
@@ -367,20 +345,37 @@ def tri_to_grid(g_final):
 
 g_final2=tri_to_grid(g_final)
 
-import stompy.plot.cmap as scmap
-cmap=scmap.load_gradient('oc-sst.cpt')
+if 1: 
+    # Try adding in any diagonal edges here, so that ragged edges
+    # get cells in g_final2, too.
+    ragged=np.nonzero( (qg.gen.edges['dij']!=0.0).sum(axis=1)==2 )[0]
+    for gen_j in ragged:
+        j_ints=np.nonzero( g_int.edges['gen_j']==gen_j )[0]
+        for j_int in j_ints:
+            nodes=[g_final2.add_or_find_node(g_int.nodes['x'][n])
+                   for n in g_int.edges['nodes'][j_int]]
+            j_fin2=g_final2.nodes_to_edge(nodes)
+            if j_fin2 is None:
+                j_fin2=g_final2.add_edge(nodes=nodes,constrained=True,
+                                         # May need other sentinel values here to simplify
+                                         # code below
+                                         dij=[1,1],
+                                         ij=[np.nan,np.nan],
+                                         psiphi=[np.nan,np.nan])
 
-g_final2.plot_cells(values=np.linspace(0,1,g_final2.Ncells()),cmap=cmap)
+    g_final2.make_cells_from_edges()
+
+
+## 
+
+plt.figure(5).clf()
+fig,ax=plt.subplots(num=5)
+g_final2.plot_cells(values=np.linspace(0,1,g_final2.Ncells()),cmap=cmap,ax=ax)
 
 ax.axis('tight')
 ax.axis('equal')
 
-# plt.figure(2).clf()
-# fig,ax=plt.subplots(num=2)
-# g_final.plot_edges(mask=g_final.edges['constrained'],ax=ax,color='k',alpha=0.5,lw=2.0)
-# ax.axis('equal')
-
-# ---
+##
 
 e2c=g_final2.edge_to_cells(recalc=True)
 
@@ -396,82 +391,10 @@ for j in g_final2.valid_edge_iter():
     elif g_final2.edges['dij'][j,1]==0:
         j_adj[c1,c2]=j_adj[c2,c1]=True
     else:
-        print('What?')
+        print("What? Ragged edge okay, but it shouldn't have both cell neighbors")
 
-from scipy.sparse import csgraph
-n_comp_i,labels_i=csgraph.connected_components(i_adj.astype(np.int32),directed=False)
-n_comp_j,labels_j=csgraph.connected_components(j_adj,directed=False)
-
-def add_swath_contours_old(comp_cells,node_field,coord,field_extrap):
-    # Check all of the nodes to find the range ij
-    comp_nodes=[ g_final2.cell_to_nodes(c) for c in comp_cells ]
-    comp_nodes=np.unique( np.concatenate(comp_nodes) )
-    comp_ijs=[] # Certainly could have kept this info along while building...
-
-    field_values=[]
-
-    comp_ij=np.array(g_final2.edges['ij'][ g_final2.cell_to_edges(comp_cells[0]) ])
-    comp_pp=np.array(g_final2.edges['psiphi'][ g_final2.cell_to_edges(comp_cells[0]) ])
-    
-    # it's actually the other coordinate that we want to consider.
-    field_min=np.nanmin( comp_pp[:,1-coord] )
-    field_max=np.nanmax( comp_pp[:,1-coord] )
-    
-    coord_min=np.nanmin( comp_ij[:,1-coord] )
-    coord_max=np.nanmax( comp_ij[:,1-coord] )
-
-    n_swath_cells=int(np.round(coord_max-coord_min))
-
-    new_field_contours=np.linspace(field_min,field_max,1+n_swath_cells)[1:-1]
-
-    c=comp_cells[0] # arbitrary -- just need somebody in the swath
-    nodes=g_final2.cell_to_nodes(c)
-    c_x=g_final2.nodes['x'][nodes]
-    c_x_vals=field_extrap(c_x)
-
-    # Get from a point to proper grid element:
-    def trace_contour_from_point(pnt,cval,node_field):
-        trace_left=g_int.trace_node_contour(loc0=['point',None,pnt],
-                                            cval=cval,
-                                            node_field=node_field,
-                                            pos_side='left',
-                                            return_full=True)
-
-        trace_right=g_int.trace_node_contour(loc0=['point',None,pnt],
-                                             cval=cval,
-                                             node_field=node_field,
-                                             pos_side='right',
-                                             return_full=True)
-
-        trace_items=trace_right[1:][::-1] + trace_left
-        return trace_items
-
-    for cnum,cval in enumerate(new_field_contours):
-        # Find starting point.
-        i=np.arange(len(c_x))
-
-        for ai,bi in zip(i, np.roll(i,-1)):
-            if cval==c_x_vals[ai]:
-                pnt=c_x[ai]
-                break
-            elif c_x_vals[ai]==c_x_vals[bi]:
-                continue # avoid division by zero
-            else:
-                alpha=(cval - c_x_vals[ai]) / (c_x_vals[bi] - c_x_vals[ai])
-                if alpha>=0 and alpha <= 1:
-                    pnt=(1-alpha)*c_x[ai] + alpha*c_x[bi]
-                    break
-        else:
-            raise Exception("Failed to find edges bracketing contour value")
-
-        trace_items=trace_contour_from_point(pnt,cval,node_field)
-        psiphi0=[np.nan,np.nan]
-        psiphi0[1-coord]=cval
-        ij0=[np.nan,np.nan]
-        ij0[1-coord]=coord_min+1+cnum
-        insert_contour(trace_items,dij=None,psiphi0=psiphi0,
-                       ij0=ij0) # could figure out dij if needed
-
+n_comp_i,labels_i=sparse.csgraph.connected_components(i_adj.astype(np.int32),directed=False)
+n_comp_j,labels_j=sparse.csgraph.connected_components(j_adj,directed=False)
 
 # preprocessing for contour placement
 nd=quads.NodeDiscretization(g_int)
@@ -490,7 +413,8 @@ phi_grad=np.sqrt( phi_dx**2 + phi_dy**2)
 
 pp_grad=[psi_grad,phi_grad]
 
-## 
+##
+
 # Just figures out the contour values and sets them on the patches.
 patch_to_contour=[{},{}] # coord, cell index=>array of contour values
 
@@ -568,43 +492,7 @@ if 1: # Swath processing
 
 ## 
 
-# Plot the contours to check visually before working up patch-construction
-# code.
-
-plt.figure(3).clf()
-fig,ax=plt.subplots(num=3)
-
-g_final2.plot_edges(color='k',lw=0.6,ax=ax)
-
-for c in g_final2.valid_cell_iter():
-    c_poly=g_final2.cell_polygon(c)
-    c_int_cells=g_int.select_cells_intersecting(c_poly)
-
-    for coord in [0,1]:
-        if coord==0:
-            node_field=qg.phi
-        else:
-            node_field=qg.psi
-
-        cvals=patch_to_contour[coord][c][1:-1]
-        cset=g_int.contour_node_values(node_field,cvals,ax=ax,
-                                       colors='k',linewidths=0.6,
-                                       linestyles='-',
-                                       tri_kwargs=dict(cell_mask=c_int_cells))
-ax.axis('equal')
-
-##
-
 # Direct grid gen from contour specifications:
-
-# rough implementation:
-extraps=[ utils.LinearNDExtrapolator( g_int.nodes['x'], qg.psi),
-          utils.LinearNDExtrapolator( g_int.nodes['x'], qg.phi) ]
-def pp_to_xy(pp,x0):
-    def cost(x,extraps):
-        return ((extraps[0](x)-pp[0])**2 + (extraps[1](x)-pp[1])**2).sum()
-    best=fmin(cost,x0,args=(extraps,),disp=False)
-    return best
 
 @utils.add_to(g_int)
 def fields_to_xy(self,target,node_fields,x0):
@@ -638,8 +526,10 @@ def fields_to_xy(self,target,node_fields,x0):
             if next_c<0:
                 if weights.min()<-1e-5:
                     print("Left triangulation (min weight: %f)"%weights.min())
-                    import pdb
-                    pdb.set_trace()
+                    # Either the starting cell didn't allow a simple path
+                    # to the target, or the target doesn't fall inside the
+                    # grid (e.g. ragged edge)
+                    return [np.nan,np.nan]
                 # Clip the answer to be within this cell (will be on an edge
                 # or node).
                 weights=weights.clip(0)
@@ -673,6 +563,15 @@ for c in utils.progress(g_final2.valid_cell_iter()):
         x=g_int.fields_to_xy(g_patch.nodes['pp'][n],
                              node_fields=[qg.psi,qg.phi],
                              x0=x0)
+        if np.isnan(x[0]):
+            # If it's a ragged cell, probably okay.
+            edge_dijs=g_final2.edges['dij'][ g_final2.cell_to_edges(c) ]
+            ragged_js=(edge_dijs!=0.0).sum(axis=1)
+            if np.any(ragged_js):
+                print("fields_to_xy() failed, but cell is ragged.")
+                g_patch.delete_node_cascade(n)
+            else:
+                print("ERROR: fields_to_xy() failed. Cell not ragged.")
         g_patch.nodes['x'][n]=x
         # Hmm -
         # When it works, this probably reduces the search time considerably,
@@ -684,13 +583,9 @@ for c in utils.progress(g_final2.valid_cell_iter()):
         # x0=x 
     patch_grids.append(g_patch)
 
-##
-
-# c=14, some of it looks great, some not so much.
-
 g=patch_grids[0]
 for g_next in patch_grids[1:]:
-    g.add_grid(g_next,merge_nodes='auto')
+    g.add_grid(g_next,merge_nodes='auto',tol=1e-6)
 
 ##
 
@@ -698,275 +593,13 @@ plt.figure(4).clf()
 fig,ax=plt.subplots(num=4)
 g.plot_edges(color='k',lw=0.5)
 g.plot_cells(color='0.8',lw=0,zorder=-2)
+#g.plot_nodes(sizes=40,alpha=0.2,color='r')
+
 ax.axis('off')
 ax.set_position([0,0,1,1])
 
-## 
-# This is the result for one of the bad nodes:
-bad_xy=[552518.562916275, 4124197.347880902]
-bad_n=g_patch.select_nodes_nearest(bad_xy)
-
-g_patch.plot_nodes(mask=[bad_n],color='k')
-bad_ij=g_patch.nodes['ij'][bad_n] # 1,1
-
-tgt_pp=psi_cvals[bad_ij[0]],phi_cvals[bad_ij[1]]
-x=g_patch.nodes['x'][bad_n]
-ans_pp=extraps[0](x),extraps[1](x) # actually very close.
-
-# Where I wanted it:
-exp_x=[552479.679184539, 4124259.167987721]
-exp_pp=extraps[0](exp_x),extraps[1](exp_x)
+# Not too bad!
 
 ##
 
-if 0: # Older postprocessing
-    # -- 
-
-    g_final3=tri_to_grid(g_final)
-    g_final3.edge_to_cells(recalc=True)
-    g_final3.delete_orphan_edges()
-
-    # -- 
-
-    e2c=g_final3.edge_to_cells()
-
-    # Look for nodes 
-    for n in g_final3.valid_node_iter():
-        js=g_final3.node_to_edges(n)
-        if len(js)>2: continue
-        if len(js)==0: continue # orphan
-
-        ij1=g_final3.edges['ij'][js[0]]
-        ij2=g_final3.edges['ij'][js[1]]
-        if np.allclose( ij1,ij2, equal_nan=True):
-            g_final3.merge_edges(node=n)
-
-    g_final3.delete_orphan_nodes()
-
-    g_final3.renumber()
-
-    n_fixed=np.isfinite(g_final3.edges['psiphi']).sum(axis=1)
-    assert np.all( n_fixed==1 )
-
-    # --
-
-    plt.figure(1).clf()
-    fig,ax=plt.subplots(num=1)
-
-    g_final3.plot_edges(lw=0.5,ax=ax,cmap='rainbow')
-
-    ax.set_position([0,0,1,1])
-    ax.axis('off')
-    ax.axis('tight')
-    ax.axis('equal')
-
-    # --
-
-    # This isn't the most direct way to handle the adjustments, but
-    # will work for the moment while I make sure that a reasonable
-    # output is possible.
-
-    # For each node, I want a psiphi, and whether either are fixed
-    # Map psiphi0 values to nodes
-
-    node_pp=np.zeros( (g_final3.Nnodes(),2), np.float64)
-    node_pp[:,:]=np.nan
-    node_ij=np.zeros( (g_final3.Nnodes(),2), np.float64)
-    node_ij[:,:]=np.nan
-
-    # Enumerate connected contours at the same time
-    adj=[ sparse.dok_matrix( (g_final3.Nnodes(),g_final3.Nnodes()), np.int32),
-          sparse.dok_matrix( (g_final3.Nnodes(),g_final3.Nnodes()), np.int32) ]
-
-    for coord in [0,1]:
-        for j in g_final3.valid_edge_iter():
-            cval=g_final3.edges['psiphi'][j,coord]
-            ijval=g_final3.edges['ij'][j,coord]
-            if np.isnan(cval):
-                continue
-            assert np.isfinite(ijval)
-            nodes=g_final3.edges['nodes'][j]
-            node_pp[nodes,coord]=cval
-            node_ij[nodes,coord]=ijval
-            adj[coord][nodes[0],nodes[1]]=adj[coord][nodes[1],nodes[0]]=1
-
-    g_final3.add_node_field('psiphi',node_pp, on_exists='overwrite')
-    g_final3.add_node_field('ij',node_ij, on_exists='overwrite')
-
-    # --
-
-    n_node_i_comp,node_labels_i=sparse.csgraph.connected_components(adj[0], directed=False)
-    n_node_j_comp,node_labels_j=sparse.csgraph.connected_components(adj[1], directed=False)
-
-    g_final3.add_node_field('comp',np.c_[node_labels_i,node_labels_j], on_exists='overwrite')
-
-    # --
-
-    # Note which contours are fixed.
-
-    # Iterate through fixed nodes of qg.gen, and
-    # find matches.
-
-    ij_fixed=np.zeros( (g_final3.Nnodes(),2), np.bool8 )
-    for coord in [0,1]:
-        for gn in np.nonzero( qg.gen.nodes['ij_fixed'][:,coord] )[0]:
-            gx=qg.gen.nodes['x'][gn]
-            n=g_final3.select_nodes_nearest(gx,max_dist=0.0)
-            assert n is not None
-
-            n_comp=g_final3.nodes['comp'][n,coord]
-            match=g_final3.nodes['comp'][:,coord]==n_comp
-            ij_fixed[match,coord]=True
-
-    g_final3.add_node_field('ij_fixed',ij_fixed,on_exists='overwrite')        
-
-    #--
-    plt.figure(1).clf()
-    fig,ax=plt.subplots(num=1)
-
-    g_final3.plot_edges(lw=0.5,ax=ax)
-    g_final3.plot_nodes(values=g_final3.nodes['comp'][:,0] % 7,
-                        mask=g_final3.nodes['ij_fixed'][:,0],
-                        ax=ax,cmap='rainbow')
-
-    ax.set_position([0,0,1,1])
-    ax.axis('off')
-    ax.axis('tight')
-    ax.axis('equal')
-
-##
-
-# How best to deal with the spacing?
-# Is there a nice way to express the global problem?
-#   Say, build a linear system that solves for the contour
-#   values
-#  1. For each pair of adjacent contours, calculate the average
-#     geographic distance between, and their current contour difference
-#     to get a local rate of change.
-#  2. Design a cost function that minimizes change in spacing.
-#     So each term is something like (d(a,b) - d(b,c))^2
-#     where d(a,b) is the average geographic distance between contour a
-#     and contour b.
-#     Some contours of course are fixed.
-#     May have to include monotonicity constraints, or use the
-#     inverse of distance to apply more weight on small distances.
-
-#  Does it make sense to go back and solve this more directly at the
-#  swath level?
-
-
-# At the swath level, I could either have the current, fixed swath widths
-# or just a nominal spacing and calculate the count along the way.
-# The objective is to closely match spacing at boundary with adjacent
-# swaths, and to have either the specified number of cells or approx.
-# match the target spacing elsewhere.
-
-# As a standard optimization problem:
-# The swaths are connected in an undirected graph.
-#  Each swath must ultimately generate a sequence of contour values.
-#  Each swath is made of patches (cells of g_final2)
-#  Each patch can calculate the spacing from the contour values.
-#  Cost is evaluated
-#   (a) within swaths, based on how close the target
-#       resolution or count is achieved
-#       and [maybe] how spacing changes within the swath/patches
-#   (b) between patches in adjacent swaths, based on how spacing
-#       matches up.
-#  Cost is optimized over the parameters for spacing within
-#  each swath.
-
-plt.figure(2).clf()
-fig,ax=plt.subplots(num=2)
-g_final2.plot_cells(ax=ax,values=np.arange(g_final2.Ncells()),
-                    cmap='tab20')
-ax.axis('equal')
-
-##
-
-# Methods to estimate spacing from contour values at the patch
-# or swath
-
-plt.figure(2).clf()
-fig,ax=plt.subplots(num=2)
-g_final2.plot_edges(ax=ax,color='k',lw=0.5)
-c=0
-g_final2.plot_cells(mask=[c], ax=ax,color='orange')
-
-ax.axis('equal')
-
-# Nodes of g_int inside c:
-c_poly=g_final2.cell_polygon(c)
-patch_nodes=g_int.select_nodes_intersecting(c_poly)
-#g_int.plot_nodes(mask=patch_nodes)
-
-
-##
-coord=0
-# Previous way is linear in psi/phi:
-comp_cells=[0]
-comp_nodes=[ g_final2.cell_to_nodes(cc) for cc in comp_cells ]
-comp_nodes=np.unique( np.concatenate(comp_nodes) )
-comp_ijs=[] # Certainly could have kept this info along while building...
-
-field_values=[]
-comp_ij=np.array(g_final2.edges['ij'][ g_final2.cell_to_edges(comp_cells[0]) ])
-comp_pp=np.array(g_final2.edges['psiphi'][ g_final2.cell_to_edges(comp_cells[0]) ])
-    
-# it's actually the other coordinate that we want to consider.
-field_min=np.nanmin( comp_pp[:,1-coord] )
-field_max=np.nanmax( comp_pp[:,1-coord] )
-coord_min=np.nanmin( comp_ij[:,1-coord] )
-coord_max=np.nanmax( comp_ij[:,1-coord] )
-# n_swath_cells=int(np.round(coord_max-coord_min))
-n_swath_cells=20
-new_field_contours=np.linspace(field_min,field_max,1+n_swath_cells)
-for v in new_field_contours:
-    ax.axvline(v,color='k',lw=0.5)
-
-plt.figure(3).clf()
-fig,ax=plt.subplots(num=3)
-g_int.plot_edges(ax=ax,color='0.6',lw=0.5)
-g_int.contour_node_values(qg.phi,new_field_contours,colors='g')
-
-##
-
-patch_val=qg.phi[patch_nodes]
-patch_grad=phi_grad[patch_nodes]
-
-plt.figure(7).clf()
-fig,(ax_grad,ax_s)=plt.subplots(2,1,num=7)
-ax_grad.plot(patch_val,patch_grad,'g.')
-
-ax_grad.set_xlabel('val')
-ax_grad.set_ylabel(r'|$\nabla$|')
-
-# Linear in phi space:
-new_field_contours=np.linspace(field_min,field_max,1+n_swath_cells)
-
-# I want contour values such that the x spacing is roughly
-# even.
-# I have dphi/dx ~ fn(phi)
-# What is the estimate spacing between contours of phi_a,phi_b?
-# delta_phi = (phi_b - phi_a)
-# delta_x = delta_phi / (dphi/dx)
-
-# What if integrate?
-# x(phi) = int_0^phi 1/(dphi/dx) d phi'
-
-order=np.argsort(patch_val)
-
-o_vals=patch_val[order]
-o_dphi_ds=patch_grad[order]
-o_ds_dphi=1./o_dphi_ds
-
-d_vals=np.diff(o_vals)
-s=np.cumsum(d_vals*0.5*(o_ds_dphi[:-1]+o_ds_dphi[1:]))
-s=np.r_[0,s]
-ax_s.plot(s, o_vals)
-
-s_contours=np.linspace(s[0],s[-1],1+n_swath_cells)
-adj_contours=np.interp( s_contours,
-                        s,o_vals)
-
-# Significantly better than linear in phi space.
-g_int.contour_node_values(qg.phi,adj_contours,colors='orange',ax=ax)
+# Is there a cleaner way to get the initial set of patches?
