@@ -37,163 +37,318 @@ qg.add_internal_edge([23,36])
 qg.add_internal_edge([20,32])
 #qg.execute()
 
-##
+@utils.add_to(qg)
+def prepare_angles(self):
+    # Allow missing angles to either be 0 or nan
+    gen=self.gen
+    
+    missing=np.isnan(gen.nodes['turn'])
+    gen.nodes['turn'][missing]=0.0
+    no_turn=gen.nodes['turn']==0.0
+    gen.nodes['turn'][no_turn]=180.0
+    gen.add_node_field('fixed',~no_turn,on_exists='pass')
+    
+    # Do the angles add up okay?
+    net_turn=(180-gen.nodes['turn']).sum()
+    assert np.abs(net_turn-360.0)<1e-10
+    
+    gen.add_edge_field('angle',np.nan*np.zeros(gen.Nedges()),
+                       on_exists='overwrite')
 
-no_turn=qg.gen.nodes['turn']==0.0
-qg.gen.nodes['turn'][no_turn]=180.0
+    # relative to the orientation of the first edge
+    # that's encountered, and relative to a CCW traversal
+    # of the cell (so not necessarily the orientation of
+    # the individual edges)
+    orientation=0 
 
-##
+    cycles=gen.find_cycles(max_cycle_len=1000)
+    assert len(cycles)==1,"For now, cannot handle multiple cycles"
+    cycle=cycles[0]
 
-plt.figure(12).clf()
-fig,ax=plt.subplots(1,1,num=12)
-
-# Do the angles add up okay?
-net_turn=(180-qg.gen.nodes['turn']).sum()
-assert np.abs(net_turn-360.0)<1e-10
-
-# What does quad_laplacians need in order to get some starter IJ info?
-
-# I think I want to mimic coalesce_ij_nominal, but use the node angles.
-
-# qg.turns_to_ij_nominal(qg.gen,dest='ij')
-
-self=qg
-gen=qg.gen
-dest='ij'
-nom_res=None
-min_steps=2
-max_cycle_len=1000
-#@utils.add_to(qg)
-#def turns_to_ij_nominal(self,gen,dest='IJ',nom_res=None,min_steps=None,
-#                         max_cycle_len=1000):
-#     """ 
-#     Similar to coalesce_ij_nominal(), but use turn angles to track
-#     orientation.
-#     nom_res: TODO -- figure out good default.  This is the nominal
-#      spacing for i and j in geographic units.
-#     min_steps: edges should not be shorter than this in IJ space.
-# 
-#     max_cycle_len: only change for large problems.  Purpose here
-#       is to abort on bad inputs/bugs instead of getting into an
-#       infinite loop
-#     """
-
-self.g_int.plot_edges(ax=ax,color='k',alpha=0.3,lw=0.5)
-ax.axis('tight')
-ax.axis('equal')
-
-if nom_res is None:
-    nom_res=self.nom_res
-
-if not isinstance(nom_res,field.Field):
-    nom_res=field.ConstantField(nom_res)
-
-if min_steps is None:
-    min_steps=self.min_steps
-
-ij=np.zeros( (gen.Nnodes(),2), np.float64)
-ij[...]=np.nan
-
-
-# Very similar to fill_ij_interp, but we go straight to
-# assigning dIJ
-cycles=gen.find_cycles(max_cycle_len=1000)
-assert len(cycles)==1,"For now, cannot handle multiple cycles"
-s=cycles[0]
-
-ij_fixed=(gen.nodes['turn']!=180.0)
-
-gen.add_edge_field('angle',np.nan*np.zeros(gen.Nedges()),
-                   on_exists='overwrite')
-
-# Collect the steps so that we can close the sum at the end
-# for idx in [0,1]: # i, j
-steps=[] # [ [node a, node b, delta], ... ]
-
-# it's a cycle, so we can roll
-is_fixed=np.nonzero( ij_fixed[s] )[0]
-assert len(is_fixed),"There are no nodes with fixed i,j!"
-
-s=np.roll(s,-is_fixed[0])
-s=np.r_[s,s[0]] # repeat first node at the end
-# Get the new indices for fixed nodes
-is_fixed=np.nonzero( ij_fixed[s] )[0]
-
-dists=utils.dist_along( gen.nodes['x'][s] )
-
-# edge parallel to x axis. This is for each edge,
-# relative to the orientation of the first edge
-# that's encountered, and relative to a CCW traversal
-# of the cell (so not necessarily the orientation of
-# the individual edges)
-orientation=0 
-ec=gen.edges_center()
-
-for a,b in zip( is_fixed[:-1],is_fixed[1:] ):
-    d_ab=dists[b]-dists[a]
-    ab_nodes=s[a:b+1]
-    for n1,n2 in zip(ab_nodes[:-1],ab_nodes[1:]):
-        j=gen.nodes_to_edge(n1,n2)
+    for a,b in zip( cycle, np.roll(cycle,-1) ):
+        j=gen.nodes_to_edge(a,b)
         assert j is not None
         gen.edges['angle'][j]=orientation
 
-    res=nom_res(ec[j])
-    n_steps=max( d_ab/res, self.min_steps )
-    n_steps_i=n_steps * np.cos(orientation*np.pi/180.0)
-    n_steps_j=n_steps * np.sin(orientation*np.pi/180.0)
+        orientation=(orientation + (180-gen.nodes['turn'][b])) % 360.0
 
-    # fixed-to-fixed segments
-    # [start node, end node, i_steps, j_steps]
-    steps.append( [s[a],s[b],round(n_steps_i), round(n_steps_j)] )
+qg.prepare_angles()
 
-    orientation=(orientation + (180-gen.nodes['turn'][s[b]])) % 360.0
+qg.add_bezier(qg.gen)
+qg.plot_gen_bezier()
+# qg.gen.plot_edges(labeler='angle') # yep
+qg.g_int=qg.create_intermediate_grid_tri()
+
+##
+
+plt.clf()
+qg.plot_intermediate() # good.
+
+NodeDiscretization=quads.NodeDiscretization
+
+@utils.add_to(qg)
+def calc_bc_gradients(self,gtri):
+    """
+    Calculate gradient vectors for psi and phi along
+    the boundary.
+    """
+    bcycle=gtri.boundary_cycle()
+
+    # First calculate psi gradient per edge:
+    j_grad_psi=np.zeros( (len(bcycle),2), np.float64)
+    j_angles=self.gen.edges['angle'][ gtri.edges['gen_j'] ] * np.pi/180.
     
-# not elegant, but ...
-# what about just finding the smallest cycles, find the set of nonzero edges
-# within each, and figuring out adjusted steps from there?
-
-steps=np.array(steps,np.int32) # [ [node start,node end, num i steps, num j steps], ... ]
-
-# Assign internal edges an orientation:
-
-const_edges=[ [], [] ]
-
-for int_1,int_2 in self.internal_edges:
-    interval=[np.nonzero( steps[:,0]==int_1)[0][0],
-              np.nonzero( steps[:,0]==int_2)[0][0]]
-    if interval[0]>interval[1]:
-        interval=interval[::-1]
+    for ji,(n1,n2) in enumerate( zip(bcycle[:-1],bcycle[1:]) ):
+        j=gtri.nodes_to_edge(n1,n2)
+        tang_xy=utils.to_unit( gtri.nodes['x'][n2] - gtri.nodes['x'][n1] )
         
-    i_diff=steps[interval[0]:interval[1],2].sum()
-    j_diff=steps[interval[0]:interval[1],3].sum()
-    # Is this an i-constant or j-constant edge?
-    if (np.abs(i_diff) <= np.abs(j_diff)):
-        print("Internal edge %d-%d is assumed i-constant"%(int_1,int_2))
-        const_edges[0].append( [int_1,int_2] )
-    else:
-        print("Internal edge %d-%d is assumed j-constant"%(int_1,int_2))
-        const_edges[1].append( [int_1,int_2] )
+        tang_ij=np.r_[ np.cos(j_angles[j]), np.sin(j_angles[j])]
+
+        # Construct a rotation R such that R.dot(tang_ij)=[1,0],
+        # then apply to tang_xy
+        Rpsi=np.array([[tang_ij[0], tang_ij[1]],
+                       [-tang_ij[1], tang_ij[0]] ] )
+        j_grad_psi[ji,:]=Rpsi.dot(tang_xy)
+
+    # Interpolate to nodes
+    bc_grad_psi=np.zeros( (len(bcycle),2), np.float64)
+
+    N=len(bcycle)
+    for ni in range(N):
+        bc_grad_psi[ni,:]=0.5*( j_grad_psi[ni,:] +
+                                j_grad_psi[(ni-1)%N,:] )
+
+    bc_grad_phi=np.zeros( (len(bcycle),2), np.float64)
+
+    # 90 CW from psi
+    bc_grad_phi[:,0]=bc_grad_psi[:,1]
+    bc_grad_phi[:,1]=-bc_grad_psi[:,0]
+
+    # Convert to dicts:
+    grad_psi={}
+    grad_phi={}
+    for ni,n in enumerate(bcycle):
+        grad_psi[n]=bc_grad_psi[ni,:]
+        grad_phi[n]=bc_grad_phi[ni,:]
+    return grad_psi,grad_phi
+
+grad_psi,grad_phi=qg.calc_bc_gradients(qg.g_int)
+
+nodes=list(grad_psi.keys())
+grads=np.array( [grad_psi[n] for n in nodes] )
+
+# okay!
+plt.quiver( qg.g_int.nodes['x'][nodes,0],
+            qg.g_int.nodes['x'][nodes,1],
+            grads[:,0],grads[:,1])
+
+@utils.add_to(qg)
+def calc_psi_phi(self):
+    gtri=self.g_int
+    self.nd=nd=NodeDiscretization(gtri)
+
+    e2c=gtri.edge_to_cells()
+
+    # check boundaries and determine where Laplacian BCs go
+    boundary=e2c.min(axis=1)<0
+    i_dirichlet_nodes={} # for psi
+    j_dirichlet_nodes={} # for phi
+
+    # Block of nodes with a zero-tangential-gradient BC
+    i_tan_groups=[]
+    j_tan_groups=[]
+    # i_tan_groups_i=[] # the input i value
+    # j_tan_groups_j=[] # the input j value
+
+    # Try zero-tangential-gradient nodes.  Current code will be under-determined
+    # without the derivative constraints.
+    bcycle=gtri.boundary_cycle()
+    n1=bcycle[-1]
+    i_grp=None
+    j_grp=None
+
+    psi_gradients,phi_gradients=self.calc_bc_gradients(gtri)
+    psi_gradient_nodes={} # node => unit vector of gradient direction
+    phi_gradient_nodes={} # node => unit vector of gradient direction
+
+    j_angles=self.gen.edges['angle'][ gtri.edges['gen_j'] ]
+
+    for n2 in bcycle:
+        j=gtri.nodes_to_edge(n1,n2)
+
+        imatch=j_angles[j] % 180==0
+        jmatch=j_angles[j] % 180==90:
+        
+        if imatch: 
+            if i_grp is None:
+                i_grp=[n1]
+                i_tan_groups.append(i_grp)
+                # i_tan_groups_i.append(i1)
+            i_grp.append(n2)
+        else:
+            i_grp=None
+
+        if jmatch:
+            if j_grp is None:
+                j_grp=[n1]
+                j_tan_groups.append(j_grp)
+                # j_tan_groups_j.append(j1)
+            j_grp.append(n2)
+        else:
+            j_grp=None
+
+        if not (imatch or jmatch):
+            # Register gradient BC for n1
+            psi_gradient_nodes[n1]=psi_gradients[n1]
+            psi_gradient_nodes[n2]=psi_gradients[n2]
+            phi_gradient_nodes[n1]=phi_gradients[n1]
+            phi_gradient_nodes[n2]=phi_gradients[n2]
+        n1=n2
+
+    # HERE: have to check the closing edge instead of matching
+    # values
+    
+    # bcycle likely starts in the middle of either a j_tan_group or i_tan_group.
+    # see if first and last need to be merged
+    if i_tan_groups[0][0]==i_tan_groups[-1][-1]:
+        i_tan_groups[0].extend( i_tan_groups.pop()[:-1] )
+    if j_tan_groups[0][0]==j_tan_groups[-1][-1]:
+        j_tan_groups[0].extend( j_tan_groups.pop()[:-1] )
+
+    # Set the range of psi to [-1,1], and pin some j to 1.0
+    low_i=np.argmin(i_tan_groups_i)
+    high_i=np.argmax(i_tan_groups_i)
+
+    i_dirichlet_nodes[i_tan_groups[low_i][0]]=-1
+    i_dirichlet_nodes[i_tan_groups[high_i][0]]=1
+    j_dirichlet_nodes[j_tan_groups[1][0]]=1
+
+    # Extra degrees of freedom:
+    # Each tangent group leaves an extra dof (a zero row)
+    # and the above BCs constrain 3 of those
+    dofs=len(i_tan_groups) + len(j_tan_groups) - 3
+    assert dofs>0
+
+    # Use the internal_edges to combine tangential groups
+    def join_groups(groups,nA,nB):
+        grp_result=[]
+        grpA=grpB=None
+        for grp in groups:
+            if nA in grp:
+                assert grpA is None
+                grpA=grp
+            elif nB in grp:
+                assert grpB is None
+                grpB=grp
+            else:
+                grp_result.append(grp)
+        assert grpA is not None
+        assert grpB is not None
+        grp_result.append( list(grpA) + list(grpB) )
+        return grp_result
+
+    for gen_edge in self.internal_edges:
+        edge=[self.g_int.select_nodes_nearest(x)
+              for x in self.gen.nodes['x'][gen_edge]]
+        edge_ij=self.gen.nodes['ij'][gen_edge]
+        dij=np.abs( edge_ij[1] - edge_ij[0] )
+
+        if dij[0]<1e-10: # join on i
+            print("Joining two i_tan_groups")
+            i_tan_groups=join_groups(i_tan_groups,edge[0],edge[1])
+        elif dij[1]<1e-10: # join on j
+            print("Joining two j_tan_groups")
+            j_tan_groups=join_groups(j_tan_groups,edge[0],edge[1])
+        else:
+            import pdb
+            pdb.set_trace()
+            print("Internal edge doesn't appear to join same-valued contours")
+
+    self.i_dirichlet_nodes=i_dirichlet_nodes
+    self.i_tan_groups=i_tan_groups
+    self.i_grad_nodes=psi_gradient_nodes
+    self.j_dirichlet_nodes=j_dirichlet_nodes
+    self.j_tan_groups=j_tan_groups
+    self.j_grad_nodes=phi_gradient_nodes
+
+    Mblocks=[]
+    Bblocks=[]
+    if 1: # PSI
+        M_psi_Lap,B_psi_Lap=nd.construct_matrix(op='laplacian',
+                                                dirichlet_nodes=i_dirichlet_nodes,
+                                                zero_tangential_nodes=i_tan_groups,
+                                                gradient_nodes=psi_gradient_nodes)
+        Mblocks.append( [M_psi_Lap,None] )
+        Bblocks.append( B_psi_Lap )
+    if 1: # PHI
+        # including phi_gradient_nodes, and the derivative links below
+        # is redundant but balanced.
+        M_phi_Lap,B_phi_Lap=nd.construct_matrix(op='laplacian',
+                                                dirichlet_nodes=j_dirichlet_nodes,
+                                                zero_tangential_nodes=j_tan_groups,
+                                                gradient_nodes=phi_gradient_nodes)
+        Mblocks.append( [None,M_phi_Lap] )
+        Bblocks.append( B_phi_Lap )
+    if 1:
+        # Not sure what the "right" value is here.
+        # When the grid is coarse and irregular, the
+        # error in these blocks can overwhelm the BCs
+        # above.  This scaling decreases the weight of
+        # these blocks.
+        # 0.1 was okay
+        # Try normalizing based on degrees of freedom.
+        # how many dofs are we short?
+        # This assumes that the scale of the rows above is of
+        # the same order as the scale of a derivative row below.
+
+        # each of those rows constrains 1 dof, and I want the
+        # set of derivative rows to constrain dofs. And there
+        # are 2*Nnodes() rows.
+        # Hmmm.  Had a case where it needed to be bigger (lagoon)
+        # Not sure why.
+        if self.gradient_scale=='scaled':
+            gradient_scale = dofs / (2*gtri.Nnodes())
+        else:
+            gradient_scale=self.gradient_scale
+
+        # PHI-PSI relationship
+        # When full dirichlet is used, this doesn't help, but if
+        # just zero-tangential-gradient is used, this is necessary.
+        Mdx,Bdx=nd.construct_matrix(op='dx')
+        Mdy,Bdy=nd.construct_matrix(op='dy')
+        if gradient_scale!=1.0:
+            Mdx *= gradient_scale
+            Mdy *= gradient_scale
+            Bdx *= gradient_scale
+            Bdy *= gradient_scale
+        Mblocks.append( [Mdy,-Mdx] )
+        Mblocks.append( [Mdx, Mdy] )
+        Bblocks.append( np.zeros(Mdx.shape[1]) )
+        Bblocks.append( np.zeros(Mdx.shape[1]) )
+
+    self.Mblocks=Mblocks
+    self.Bblocks=Bblocks
+
+    bigM=sparse.bmat( Mblocks )
+    rhs=np.concatenate( Bblocks )
+
+    psi_phi,*rest=sparse.linalg.lsqr(bigM,rhs)
+    self.psi_phi=psi_phi
+    self.psi=psi_phi[:gtri.Nnodes()]
+    self.phi=psi_phi[gtri.Nnodes():]
+
+    # Using the tan_groups, set the values to be exact
+    for i_grp in i_tan_groups:
+        self.psi[i_grp]=self.psi[i_grp].mean()
+    for j_grp in j_tan_groups:
+        self.phi[j_grp]=self.phi[j_grp].mean()
 
 
-ax.plot(gen.nodes['x'][s,0],
-        gen.nodes['x'][s,1],
-        'r--')
-ax.plot(gen.nodes['x'][s[is_fixed],0],
-        gen.nodes['x'][s[is_fixed],1],
-        'ro')
+qg.calc_psi_phi()
 
-ax.plot(gen.nodes['x'][s[is_fixed[0]],0],
-        gen.nodes['x'][s[is_fixed[-1]],1],
-        'go',ms=4)
 
-for ces,col in zip(const_edges,['orange','tab:green']):
-    for nodes in ces:
-        ax.plot( gen.nodes['x'][nodes,0],
-                 gen.nodes['x'][nodes,1],
-                 color=col)
 
-gen.plot_nodes(mask=ij_fixed,labeler='id')
-
+## 
 # So the error distribution approach is not robust.
 # narrow features, where we can't afford an adjustment,
 # can arise without any short edges. long edges can
@@ -205,6 +360,16 @@ gen.plot_nodes(mask=ij_fixed,labeler='id')
 # the algorithm?  can just the edge angles and the internal
 # edges provide enough information?
 #  - add_bezier
+#     this gets simpler, since I now store the angles explicitly.
+#  - create_intermediate_grid_tri(src='IJ')
+#     interpolates ij values along the boundary.  depending on how this is used,
+#     might be enough just to explicitly store the generating nodes where fixed.
+#     should also copy edge angles here.
+#  - calc_psi_phi()
+#     grouping can be derived from edge angles.  i,j values are currently used
+#     to select nodes which are then used for dirichlet BCs.
+#  - create_final_by_patches()
+
 
 ## 
 
