@@ -29,10 +29,31 @@ six.moves.reload_module(triangulate_hole)
 six.moves.reload_module(quads)
 
 # v06 puts angles on half-edges
-gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v06.pkl')
+gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v07.pkl')
 
 gen_src.renumber_cells()
 
+##
+
+plt.figure(1).clf()
+gen_src.plot_cells(labeler='id',centroid=True)
+plt.axis('tight')
+plt.axis('equal')
+
+##
+
+# Make sure that each individual cell works:
+for c in gen_src.valid_cell_iter():
+    if c<5: continue
+    qg=quads.QuadGen(gen_src,cells=[c],final='anisotropic',execute=False,
+                     nom_res=3.5,
+                     scales=[field.ConstantField(3),
+                             field.ConstantField(3)])
+    qg.execute()
+    qg.plot_result(num=100+c)
+
+
+##
 # Adapt quads to having angles on half-edges, and dealing with multiple
 # cells at once.
 
