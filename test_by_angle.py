@@ -226,10 +226,8 @@ qg.i_grad_nodes=i_grad_nodes
 #  the laplacian, along with each internal node.
 #  each set of open boundary nodes implies a constant
 #  value.
-#
 
-
-qg=quads.QuadGen(gen_src,cells=[10,11],
+qg=quads.QuadGen(gen_src,cells=[3],
                  final='anisotropic',execute=False,
                  nom_res=3.5,triangle_method='rebay',
                  scales=[i_scale,j_scale])
@@ -239,7 +237,7 @@ qg.add_bezier(qg.gen)
 qg.g_int=qg.create_intermediate_grid_tri()
 qg.internal_edges=[] # While testing, drop the internal edges
 qg.calc_psi_phi()
-qg.plot_psi_phi(thinning=1)
+qg.plot_psi_phi(thinning=0.2)
 
 ##
 
@@ -249,35 +247,82 @@ i_grad_nodes=dict(qg.i_grad_nodes)
 
 # This is bad whether I include these normals or not.
 nd=qg.nd
-if 0:
-    for n in np.nonzero( qg.g_int.nodes['rigid'])[0]:
-        gen_n=qg.g_int.nodes['gen_n'][n]
-        assert n>=0
-        turn=qg.gen.nodes['turn'][gen_n]
-        if turn!=90:
-            if n not in qg.i_grad_nodes:
-                # Add it!
-                print(n,turn)
-                i_grad_nodes[n] = psi_gradients[n]
 
 M_psi_Lap,B_psi_Lap=nd.construct_matrix(op='laplacian',
                                         dirichlet_nodes=qg.i_dirichlet_nodes,
+                                        skip_dirichlet=False,
                                         zero_tangential_nodes=qg.i_tan_groups,
                                         gradient_nodes=i_grad_nodes)
 
 print(f"{M_psi_Lap.shape}")
-#FAIL
-qg.psi,istop,itn,r1norm,r2norm,anorm,arnorm,acond,xnorm,v=sparse.linalg.lsqr( M_psi_Lap, B_psi_Lap )
+
+## 
+# Manually add in the normal constraints
+# qg.g_int.plot_nodes(labeler='id')
+coord=0 # signify we're working on psi
+
+# Find these automatically.
+noflux_tris=[]
+for n in np.nonzero(qg.g_int.nodes['rigid'])[0]:
+    gen_n=qg.g_int.nodes['gen_n'][n]
+    assert gen_n>=0
+    gen_angle=qg.gen.nodes['turn'][gen_n]
+    # For now, ignore non-cartesian, and 90
+    # degree doesn't count
+    if gen_angle not in [270,360]: continue
+    if gen_angle==270:
+        print(f"n {n}: angle=270")
+    elif gen_angle==360:
+        print(f"n {n}: angle=360")
+
+    js=qg.g_int.node_to_edges(n)
+    e2c=qg.g_int.edge_to_cells()
+
+    for j in js:
+        if (e2c[j,0]>=0) and (e2c[j,1]>=0): continue
+        gen_j=qg.g_int.edges['gen_j'][j]
+        angle=qg.gen.edges['angle'][gen_j]
+        if qg.g_int.edges['nodes'][j,0]==n:
+            nbr=qg.g_int.edges['nodes'][j,1]
+        else:
+            nbr=qg.g_int.edges['nodes'][j,0]
+        print(f"j={j}  {n} -- {nbr}  angle={angle}")
+        # Does the angle 
+        if (angle + 90*coord)%180. == 90.:
+            print("YES")
+            c=e2c[j,:].max()
+            tri=qg.g_int.cells['nodes'][c]
+            while tri[2] in [n,nbr]:
+                tri=np.roll(tri,1)
+            noflux_tris.append( tri )
+        
+nf_block=sparse.dok_matrix( (len(noflux_tris),qg.g_int.Nnodes()), np.float64)
+nf_rhs=np.zeros( len(noflux_tris) )
+node_xy=qg.g_int.nodes['x'][:,:]
+
+for idx,tri in enumerate(noflux_tris):
+    target_dof=idx # just controls where the row is written
+    d01=node_xy[tri[1],:] - node_xy[tri[0],:]
+    d02=node_xy[tri[2],:] - node_xy[tri[0],:]
+    # Derivation in sympy below
+    nf_block[target_dof,:]=0 # clear old
+    nf_block[target_dof,tri[0]]= -d01[0]**2 + d01[0]*d02[0] - d01[1]**2 + d01[1]*d02[1]
+    nf_block[target_dof,tri[1]]= -d01[0]*d02[0] - d01[1]*d02[1]
+    nf_block[target_dof,tri[2]]= d01[0]**2 + d01[1]**2
+    nf_rhs[target_dof]=0
+
+M=sparse.bmat( [ [M_psi_Lap],[nf_block]] )
+B=np.concatenate( [B_psi_Lap,nf_rhs] )
+
+# Almost Good! But one little corner goes nuts.  Fixed that
+# by not dropping rows that are also dirichlet.  
+# qg.psi,istop,itn,r1norm,r2norm,anorm,arnorm,acond,xnorm,v=sparse.linalg.lsqr( M, B )
 qg.phi[:]=0
+# Direct solve is reasonably fast and gave better result.
+qg.psi=sparse.linalg.spsolve(M.tocsr(),B)
 
-# Direct solve is no different
-# qg.psi=np.linalg.solve(M_psi_Lap.todense(), B_psi_Lap )
-
-#qg.i_grad_nodes=i_grad_nodes
-
-# This one has the extra dof taken up by an internal edge, but then fails pretty
-# bad
-qg.plot_psi_phi(thinning=1)
+qg.plot_psi_phi(thinning=0.2)
+qg.plot_psi_phi_setup()
 
 ##
 
@@ -482,7 +527,7 @@ for n in boundary_dofs['bottom'].all():
     Ad[n,n]=1
     b[n]=1.
 
-# HERE this is what I want to relax
+# This is what I want to relax
 # Of the group, all but one dof are used to set the
 # equality.  the last dof gets a single-element normal
 # BC
@@ -560,7 +605,19 @@ u_soln=np.linalg.solve(Ad,b)
 #  #  psi0:  -dx01**2 + dx01*dx02 - dy01**2 + dy01*dy02
 #  #  psi1:  -dx01*dx02 - dy01*dy02
 #  #  psi2:  dx01**2 + dy01**2
-    
+
+# This appears to work okay.
+# HERE: next step is to think through how it will apply to a more complicated
+#   domain (i.e. can I do this at every inside corner?  will it play nice with
+#   ragged edges?).
+#    Seems that every inside corner will work out.  Ragged edges when joining
+#    parallel edges are maybe okay??
+#  Not sure what to do about internal edges. For the moment ignoring ragged or
+#   or internal edges...
+# Then test it on the [10,11] subdomain above.
+#  => good.
+# And then the [3] subdomain.
+# And finally the whole domain.
 
 # Solving for the gradient:
 g01=m.p[:,grad_tri[1]] - m.p[:,grad_tri[0]]
