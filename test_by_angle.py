@@ -55,6 +55,7 @@ plt.axis('tight')
 plt.axis('equal')
 
 ##
+
 # Make sure that each individual cell works:
 # good.
 for c in gen_src.valid_cell_iter():
@@ -145,79 +146,6 @@ ax.axis(zoom)
 
 ##
 
-# a problem node, 270:
-bad_x=[552563.9669722788, 4123444.90592972]
-bad_n=qg.g_int.select_nodes_nearest(bad_x)
-
-# # What sorts of constraints is this involved in?
-# M=qg.Mblocks[0][0]
-# 
-# # Which rows have a nonzero entry for bad_n?
-# bad_n_hits=np.nonzero( M[:,bad_n].todense() )[0]
-# 
-# print(f"There are {len(bad_n_hits)} rows involving the bad node {bad_n}")
-# 
-# for row in bad_n_hits:
-#     print(f"{row}:  ",end="")
-#     row_members=np.nonzero( M[row,:].todense() )[1]
-#     print( row_members)
-#     print()
-
-
-##
-
-# What is the gradient here?
-# Definitely bad.
-nd=qg.nd
-bad_dx=nd.node_dx(bad_n)
-bad_dy=nd.node_dy(bad_n)
-
-f=psi2[0]
-
-bad_grad= [ (f[bad_dx[0]] * bad_dx[1]).sum(),
-            (f[bad_dy[0]] * bad_dy[1]).sum() ]
-            
-ax.quiver( [qg.g_int.nodes['x'][bad_n,0]],
-           [qg.g_int.nodes['x'][bad_n,1]],
-           [bad_grad[0]],[bad_grad[1]])
-
-## 
-# What if I add a gradient BC for each internal corner?
-# First, recreate
-
-psi_gradients,phi_gradients=qg.calc_bc_gradients(qg.g_int)
-
-i_grad_nodes=dict(qg.i_grad_nodes)
-
-for n in np.nonzero( qg.g_int.nodes['rigid'])[0]:
-    gen_n=qg.g_int.nodes['gen_n'][n]
-    assert n>=0
-    turn=qg.gen.nodes['turn'][gen_n]
-    if turn!=90:
-        if n not in qg.i_grad_nodes:
-            # Add it!
-            print(n,turn)
-            i_grad_nodes[n] = psi_gradients[n]
-
-M_psi_Lap,B_psi_Lap=nd.construct_matrix(op='laplacian',
-                                        dirichlet_nodes=qg.i_dirichlet_nodes,
-                                        zero_tangential_nodes=qg.i_tan_groups,
-                                        gradient_nodes=i_grad_nodes)
-
-# Looks better, but still not great.
-# Is it a tolerance issue?
-# I still have on extra dof.
-psi2,istop,itn,r1norm,r2norm,anorm,arnorm,acond,xnorm,v=sparse.linalg.lsqr( M_psi_Lap, B_psi_Lap,
-                                                                            atol=1e-10,
-                                                                            btol=1e-10)
-qg.i_grad_nodes=i_grad_nodes
-
-##
-
-
-# Is there something about putting BCs on nodes vs. edges that
-# would explain how I end up 1 short?
-
 # am I missing a global conservation of mass?
 # like all of the inflows should balance the outflows?
 
@@ -229,138 +157,128 @@ qg.i_grad_nodes=i_grad_nodes
 six.moves.reload_module(quads)
 
 qg=quads.QuadGen(gen_src,cells=[3],
-                 final='anisotropic',execute=False,
-                 nom_res=3.5,triangle_method='rebay',
+                 final='anisotropic',execute=True,
+                 nom_res=3.5,triangle_method='gmsh',
                  scales=[i_scale,j_scale])
+
+## 
 # qg.execute()
 qg.prepare_angles()
 qg.add_bezier(qg.gen)
 qg.g_int=qg.create_intermediate_grid_tri()
 qg.internal_edges=[] # While testing, drop the internal edges
-qg.calc_psi_phi()
-# qg.plot_psi_phi(thinning=0.2)
-
-##
+qg.psi_phi_setup()
 
 # Manually add in the normal constraints
-coord=1 # signify we're working on psi vs. phi
-
-if coord==0:
-    grad_nodes=dict(qg.i_grad_nodes)
-    dirichlet_nodes=dict(qg.i_dirichlet_nodes)
-    tan_groups=qg.i_tan_groups
-else:
-    dirichlet_nodes=dict(qg.j_dirichlet_nodes)
-    dirichlet_nodes[1110]=-1. # MANUAL!!
-    tan_groups=qg.j_tan_groups
-    grad_nodes=dict(qg.j_grad_nodes)
+@utils.add_to(qg)
+def calc_psi_phi(self):
+    self.psi_phi_setup(n_j_dirichlet=2)
     
-print(f"{M_Lap.shape}")
+    for coord in [0,1]: # signify we're working on psi vs. phi
 
-# Find these automatically.
-# For ragged edges: not sure, but punt by dropping the
-# the gradient BC on the acute end (node 520)
-noflux_tris=[]
-for n in np.nonzero(qg.g_int.nodes['rigid'])[0]:
-    gen_n=qg.g_int.nodes['gen_n'][n]
-    assert gen_n>=0
-    gen_angle=qg.gen.nodes['turn'][gen_n]
-    # For now, ignore non-cartesian, and 90
-    # degree doesn't count
-    if (gen_angle>90) and (gen_angle<180):
-        # A ragged edge -- try out removing the gradient BC
-        # here
-        if n in grad_nodes:
-            print(f"n {n}: angle={gen_angle} Dropping gradient BC")
-            del grad_nodes[n]
-        continue
-        
-    if gen_angle not in [270,360]: continue
-    if gen_angle==270:
-        print(f"n {n}: angle=270")
-    elif gen_angle==360:
-        print(f"n {n}: angle=360")
-
-    js=qg.g_int.node_to_edges(n)
-    e2c=qg.g_int.edge_to_cells()
-
-    for j in js:
-        if (e2c[j,0]>=0) and (e2c[j,1]>=0): continue
-        gen_j=qg.g_int.edges['gen_j'][j]
-        angle=qg.gen.edges['angle'][gen_j]
-        if qg.g_int.edges['nodes'][j,0]==n:
-            nbr=qg.g_int.edges['nodes'][j,1]
+        if coord==0:
+            grad_nodes=dict(self.i_grad_nodes)
+            dirichlet_nodes=dict(self.i_dirichlet_nodes)
+            tan_groups=self.i_tan_groups
         else:
-            nbr=qg.g_int.edges['nodes'][j,0]
-        print(f"j={j}  {n} -- {nbr}  angle={angle}")
-        # Does the angle 
-        if (angle + 90*coord)%180. == 90.:
-            print("YES")
-            c=e2c[j,:].max()
-            tri=qg.g_int.cells['nodes'][c]
-            while tri[2] in [n,nbr]:
-                tri=np.roll(tri,1)
-            noflux_tris.append( tri )
-        
-nf_block=sparse.dok_matrix( (len(noflux_tris),qg.g_int.Nnodes()), np.float64)
-nf_rhs=np.zeros( len(noflux_tris) )
-node_xy=qg.g_int.nodes['x'][:,:]
-
-for idx,tri in enumerate(noflux_tris):
-    target_dof=idx # just controls where the row is written
-    d01=node_xy[tri[1],:] - node_xy[tri[0],:]
-    d02=node_xy[tri[2],:] - node_xy[tri[0],:]
-    # Derivation in sympy below
-    nf_block[target_dof,:]=0 # clear old
-    nf_block[target_dof,tri[0]]= -d01[0]**2 + d01[0]*d02[0] - d01[1]**2 + d01[1]*d02[1]
-    nf_block[target_dof,tri[1]]= -d01[0]*d02[0] - d01[1]*d02[1]
-    nf_block[target_dof,tri[2]]= d01[0]**2 + d01[1]**2
-    nf_rhs[target_dof]=0
-
-
-M_Lap,B_Lap=qg.nd.construct_matrix(op='laplacian',
-                                   dirichlet_nodes=dirichlet_nodes,
-                                   skip_dirichlet=False,
-                                   zero_tangential_nodes=tan_groups,
-                                   gradient_nodes=grad_nodes)
-
-
-M=sparse.bmat( [ [M_Lap],[nf_block]] )
-B=np.concatenate( [B_Lap,nf_rhs] )
-
-assert M.shape[0] == M.shape[1]
-
-# Good!
-# qg.psi,istop,itn,r1norm,r2norm,anorm,arnorm,acond,xnorm,v=sparse.linalg.lsqr( M, B )
-if coord==0:
-    qg.phi[:]=0
-    # Direct solve is reasonably fast and gave better result.
-    qg.psi=sparse.linalg.spsolve(M.tocsr(),B)
-else:
-    qg.psi[:]=0 # reduce clutter in plot
-    # Direct solve is reasonably fast and gave better result.
-    qg.phi=sparse.linalg.spsolve(M.tocsr(),B)
+            grad_nodes=dict(self.j_grad_nodes)
+            dirichlet_nodes=dict(self.j_dirichlet_nodes)
+            tan_groups=self.j_tan_groups
     
+        # Find these automatically.
+        # For ragged edges: not sure, but punt by dropping the
+        # the gradient BC on the acute end (node 520)
+        noflux_tris=[]
+        for n in np.nonzero(self.g_int.nodes['rigid'])[0]:
+            gen_n=self.g_int.nodes['gen_n'][n]
+            assert gen_n>=0
+            gen_angle=self.gen.nodes['turn'][gen_n]
+            # For now, ignore non-cartesian, and 90
+            # degree doesn't count
+            if (gen_angle>90) and (gen_angle<180):
+                # A ragged edge -- try out removing the gradient BC
+                # here
+                if n in grad_nodes:
+                    print(f"n {n}: angle={gen_angle} Dropping gradient BC")
+                    del grad_nodes[n]
+                continue
+
+            if gen_angle not in [270,360]: continue
+            if gen_angle==270:
+                print(f"n {n}: angle=270")
+            elif gen_angle==360:
+                print(f"n {n}: angle=360")
+
+            js=self.g_int.node_to_edges(n)
+            e2c=self.g_int.edge_to_cells()
+
+            for j in js:
+                if (e2c[j,0]>=0) and (e2c[j,1]>=0): continue
+                gen_j=self.g_int.edges['gen_j'][j]
+                angle=self.gen.edges['angle'][gen_j]
+                if self.g_int.edges['nodes'][j,0]==n:
+                    nbr=self.g_int.edges['nodes'][j,1]
+                else:
+                    nbr=self.g_int.edges['nodes'][j,0]
+                print(f"j={j}  {n} -- {nbr}  angle={angle}")
+                # Does the angle 
+                if (angle + 90*coord)%180. == 90.:
+                    print("YES")
+                    c=e2c[j,:].max()
+                    tri=self.g_int.cells['nodes'][c]
+                    while tri[2] in [n,nbr]:
+                        tri=np.roll(tri,1)
+                    noflux_tris.append( tri )
+
+        nf_block=sparse.dok_matrix( (len(noflux_tris),self.g_int.Nnodes()), np.float64)
+        nf_rhs=np.zeros( len(noflux_tris) )
+        node_xy=self.g_int.nodes['x'][:,:]
+
+        for idx,tri in enumerate(noflux_tris):
+            target_dof=idx # just controls where the row is written
+            d01=node_xy[tri[1],:] - node_xy[tri[0],:]
+            d02=node_xy[tri[2],:] - node_xy[tri[0],:]
+            # Derivation in sympy below
+            nf_block[target_dof,:]=0 # clear old
+            nf_block[target_dof,tri[0]]= -d01[0]**2 + d01[0]*d02[0] - d01[1]**2 + d01[1]*d02[1]
+            nf_block[target_dof,tri[1]]= -d01[0]*d02[0] - d01[1]*d02[1]
+            nf_block[target_dof,tri[2]]= d01[0]**2 + d01[1]**2
+            nf_rhs[target_dof]=0
+
+
+        M_Lap,B_Lap=self.nd.construct_matrix(op='laplacian',
+                                           dirichlet_nodes=dirichlet_nodes,
+                                           skip_dirichlet=False,
+                                           zero_tangential_nodes=tan_groups,
+                                           gradient_nodes=grad_nodes)
+
+
+        M=sparse.bmat( [ [M_Lap],[nf_block]] )
+        B=np.concatenate( [B_Lap,nf_rhs] )
+
+        assert M.shape[0] == M.shape[1]
+
+        # Direct solve is reasonably fast and gave better results.
+        soln=sparse.linalg.spsolve(M.tocsr(),B)
+        assert np.all(np.isfinite(soln))
+        
+        for grp in tan_groups:
+            # Making the tangent groups exact helps in contour tracing later
+            soln[grp]=soln[grp].mean()
+            
+        if coord==0:
+            self.psi=soln
+        else:
+            self.phi=soln
+
+qg.calc_psi_phi()
+
+
+## 
 qg.plot_psi_phi(thinning=0.2)
 
-qg.plot_psi_phi_setup()
+#qg.plot_psi_phi_setup()
 
-##
-
-from scipy.linalg.interpolative import estimate_rank
-
-r=estimate_rank(M_psi_Lap.todense(),eps=1e-10)
-print(r)
-
-##
-
-qg.plot_psi_phi_setup()
-
-##
-
-# Revisiting the discussion of degrees of freedom
-#   N nodes
-#    all internal nodes 
 
 ## 
 # HERE:
@@ -373,222 +291,6 @@ qg.plot_psi_phi_setup()
 
 ##
 
-# looks like I need to back up and understand the forms better.
-# For the interior, I'm solving
-# del dot del u = 0
-# the laplace eqn
-
-# somehow this ends up as int  grad u dot grad v
-
-# del dot del u = 0
-# (del dot del u) * v = 0 * v
-
-# int del dot del u * v dx = int 0 dx
-
-# there is some requirement that v satisfy the BCs.
-# not sure why.  moving on
-
-# integrate by parts:
-# following the 1D example:
-
-# int u'' v dx  ==  u' (v | 0,1) - int u' v' dx
-
-# that's another way of saying
-# int u'' v dx  + int u' v' dx  ==  u' (v | 0,1)
-
-# or imagine taking the derivative of both sides:
-
-# (u'' v)   +  (u'v') == d/dx ( u' v )
-
-# so the integration by parts is roughly the integral version
-# of the product rule.  Take the original integrand with u'' v
-# turns into two terms:
-#  int u'' int v  - int u' v'
-
-#  back to my case:
-# int del dot del u * v dx
-
-# => (int del dot del u) * (int v) - int( del u * del v )
-# => int del u * int v  -  int( del u * del v)
-
-# Somehow green's thm lets that first bit go away
-
-
-## 
-six.moves.reload_module(rebay)
-six.moves.reload_module(triangulate_hole)
-six.moves.reload_module(quads)
-
-qg=quads.QuadGen(gen_src,cells=[0],final='anisotropic',execute=False,
-                 nom_res=3.5,triangle_method='gmsh',
-                 scales=[i_scale,j_scale])
-
-qg.execute()
-#qg.plot_psi_phi_setup()
-
-## 
-# How well does this translate scikit-fem?
-from skfem import *
-from skfem.helpers import grad, dot
-from skfem.models.poisson import laplace, unit_load
-from skfem.visuals.matplotlib import plot
-
-## 
-m = MeshTri(p=qg.g_int.nodes['x'].T,
-            t=qg.g_int.cells['nodes'].T,
-            validate=True)
-
-# plot(m,qg.psi,shading='gouraud')
-pnts=None
-def choose_top(xi):
-    global pnts
-    pnts=xi.copy()
-    print(xi.shape)
-    return False
-
-# define_boundary, at least for this element type,
-# pass [2,Nedges] midpoints.
-m.define_boundary('test',choose_top)
-
-##
-
-plt.figure(10).clf()
-qg.g_int.plot_edges()
-plt.plot(pnts[0,:],pnts[1,:],'r.')
-
-##
-
-# Test things out on an L-shaped mesh
-
-# The goal here is to have skfem tell us what the
-# dirichlet BC for the middle edge should be.
-
-m=MeshTri.init_lshaped()
-m.refine(2)
-
-m.define_boundary('top', lambda xi: xi[1] == 1.)
-m.define_boundary('mid', lambda xi: (xi[1] == 0.) & (xi[0]>0.0) )
-m.define_boundary('bottom', lambda xi: xi[1] == -1)
-
-# These will get a zero normal by some sort of magic.
-# I think it's similar to the NodeDiscretization, where
-# a zero normal just happens by default
-#m.define_boundary('left', lambda xi: xi[0] == 0.)
-#m.define_boundary('right', lambda xi: xi[0] == 1.)
-
-e = ElementTriP1()
-basis = InteriorBasis(m, e)
-
-##
-
-A = asm(laplace, basis)
-
-# 65x65 sparse matrix
-#  m.t.shape => (3,96) for 96 triangular elements
-#  m.p.shape => (2,65) for 65 2D nodes.
-
-boundary_dofs = basis.find_dofs()
-interior_dofs = basis.complement_dofs(boundary_dofs)
-all_boundary_dofs=np.concatenate( (boundary_dofs['top'].all(),
-                                   boundary_dofs['bottom'].all(),
-                                   boundary_dofs['mid'].all() ) )
-# 19 in all_boundary_dofs
-# 46 in interior_dofs
-# That sums to the 65 nodes
-u = np.zeros(basis.N) # number of nodes
-
-u[boundary_dofs['top'].all()] = 7.
-u[boundary_dofs['bottom'].all()] = 1.
-
-# So if I guess the right value here, it's fine.
-# but what I want is to just say that there is no tangential
-# gradient along these facets
-u[boundary_dofs['mid'].all()] = np.pi
-
-b=0.*u # rhs
-
-# Could I handle my BCs external to the skfem machinery?
-# cond_b above has some dependence on the BC for mid.
-# Some entries in cond_b are equal to or half of the BC value.
-# A (65x65) is full rank.
-
-# But I could come in and say that any reference to node x should instead
-# use node y
-
-# Say there are 5 nodes that are part of the mid BC.
-#
-Ad=A.todense()
-
-## 
-n=46
-
-rows=np.nonzero( Ad[:,n] )[0]
-cols=np.nonzero( np.any( Ad[rows,:]!=0.0, axis=0) )[1]
-block=np.concatenate( (cols[None,:], Ad[rows,:][:,cols]), axis=0)
-block=np.concatenate( ( np.r_[np.nan, rows][:,None], block), axis=1)
-
-print()
-print(block)
-
-## 
-# A is square, with x and b both in order of nodes.
-# So the Laplacian for n=8 is the 8th row.
-# What if I omit that row, and say that 8 is equal to
-
-# u_soln = solve(*condense(A, 0.*u, u, interior_dofs))
-
-b=0*u
-for n in boundary_dofs['top'].all():
-    Ad[n,:]=0
-    Ad[n,n]=1
-    b[n]=7.
-
-for n in boundary_dofs['bottom'].all():
-    Ad[n,:]=0
-    Ad[n,n]=1
-    b[n]=1.
-
-# This is what I want to relax
-# Of the group, all but one dof are used to set the
-# equality.  the last dof gets a single-element normal
-# BC
-tan_grp=boundary_dofs['mid'].all()
-for n1,n2 in zip(tan_grp[:-1],tan_grp[1:]):
-    Ad[n2,:]=0
-    Ad[n2,n2]=1
-    Ad[n2,n1]=-1
-    b[n2]=0
-
-# I think that what I lose is the no-flux condition around the
-# corner.
-# Manually evaluate the gradient in [0,22,26]
-grad_tri=[0,22,26] # with the zero-flux edge along the first two of these
-target_dof=tan_grp[0] # install in this row of the matrix
-
-d01=m.p[:,grad_tri[1]] - m.p[:,grad_tri[0]]
-d02=m.p[:,grad_tri[2]] - m.p[:,grad_tri[0]]
-# Derivation in sympy below
-Ad[target_dof,:]=0 # clear old
-Ad[target_dof,grad_tri[0]]= -d01[0]**2 + d01[0]*d02[0] - d01[1]**2 + d01[1]*d02[1]
-Ad[target_dof,grad_tri[1]]= -d01[0]*d02[0] - d01[1]*d02[1]
-Ad[target_dof,grad_tri[2]]= d01[0]**2 + d01[1]**2
-b[target_dof]=0
-
-u_soln=np.linalg.solve(Ad,b)
-
-# This is what I want to encode:
-# [dx01 dy01] [ tgt_grad_x ] = c * [ dpsi01 ]
-# [dx02 dy02] [ tgt_grad_y ]       [ dpsi02 ]
-
-# And I don't care what c is (well, not 0)
-# Instead, write this for the vector perpendicular to the
-# normal, and set that to 0.
-
-# Solve this for nx, ny:
-# [dx01 dy01] [ nx ] = [ dpsi01 ]
-# [dx02 dy02] [ ny ]   [ dpsi02 ]
-
-# det=(dx01*dy02) - (dy01*dx02)
 
 #  from sympy import *
 #  dx01,dy01,dx02,dy02 = symbols("dx01 dy01 dx02 dy02")
@@ -679,29 +381,8 @@ g_int_gmsh.plot_nodes(color='orange',sizes=10,alpha=0.3)
 plt.axis('tight')
 plt.axis('equal')
 
-        
-## 
-# is this any faster?  yes.
-# results are worse, though
-psi_phi2,*rest=sparse.linalg.lsmr(bigM,rhs)
-N=qg.g_int.Nnodes()
-psi2=psi_phi2[:N]
-phi2=psi_phi2[N:]
-
 ##
 
-# Should see if scipy fem can be used instead of my code.
-
-
-# Is it possible to find the rank of bigM?
-from scipy.linalg import interpolative
-from scipy import sparse
-
-# Too slow..
-bigM_op=sparse.linalg.aslinearoperator(bigM)
-est_rank=interpolative.estimate_rank(bigM_op,1e-6)
-        
-## 
 # Adapt quads to having angles on half-edges, and dealing with multiple
 # cells at once.
 
