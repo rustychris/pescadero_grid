@@ -226,6 +226,7 @@ qg.i_grad_nodes=i_grad_nodes
 #  the laplacian, along with each internal node.
 #  each set of open boundary nodes implies a constant
 #  value.
+six.moves.reload_module(quads)
 
 qg=quads.QuadGen(gen_src,cells=[3],
                  final='anisotropic',execute=False,
@@ -237,31 +238,28 @@ qg.add_bezier(qg.gen)
 qg.g_int=qg.create_intermediate_grid_tri()
 qg.internal_edges=[] # While testing, drop the internal edges
 qg.calc_psi_phi()
-qg.plot_psi_phi(thinning=0.2)
+# qg.plot_psi_phi(thinning=0.2)
 
 ##
 
-# This domain has 4 tangential gradient BCs, and 4 normal gradient BCs
-
-i_grad_nodes=dict(qg.i_grad_nodes)
-
-# This is bad whether I include these normals or not.
-nd=qg.nd
-
-M_psi_Lap,B_psi_Lap=nd.construct_matrix(op='laplacian',
-                                        dirichlet_nodes=qg.i_dirichlet_nodes,
-                                        skip_dirichlet=False,
-                                        zero_tangential_nodes=qg.i_tan_groups,
-                                        gradient_nodes=i_grad_nodes)
-
-print(f"{M_psi_Lap.shape}")
-
-## 
 # Manually add in the normal constraints
-# qg.g_int.plot_nodes(labeler='id')
-coord=0 # signify we're working on psi
+coord=1 # signify we're working on psi vs. phi
+
+if coord==0:
+    grad_nodes=dict(qg.i_grad_nodes)
+    dirichlet_nodes=dict(qg.i_dirichlet_nodes)
+    tan_groups=qg.i_tan_groups
+else:
+    dirichlet_nodes=dict(qg.j_dirichlet_nodes)
+    dirichlet_nodes[1110]=-1. # MANUAL!!
+    tan_groups=qg.j_tan_groups
+    grad_nodes=dict(qg.j_grad_nodes)
+    
+print(f"{M_Lap.shape}")
 
 # Find these automatically.
+# For ragged edges: not sure, but punt by dropping the
+# the gradient BC on the acute end (node 520)
 noflux_tris=[]
 for n in np.nonzero(qg.g_int.nodes['rigid'])[0]:
     gen_n=qg.g_int.nodes['gen_n'][n]
@@ -269,6 +267,14 @@ for n in np.nonzero(qg.g_int.nodes['rigid'])[0]:
     gen_angle=qg.gen.nodes['turn'][gen_n]
     # For now, ignore non-cartesian, and 90
     # degree doesn't count
+    if (gen_angle>90) and (gen_angle<180):
+        # A ragged edge -- try out removing the gradient BC
+        # here
+        if n in grad_nodes:
+            print(f"n {n}: angle={gen_angle} Dropping gradient BC")
+            del grad_nodes[n]
+        continue
+        
     if gen_angle not in [270,360]: continue
     if gen_angle==270:
         print(f"n {n}: angle=270")
@@ -311,17 +317,32 @@ for idx,tri in enumerate(noflux_tris):
     nf_block[target_dof,tri[2]]= d01[0]**2 + d01[1]**2
     nf_rhs[target_dof]=0
 
-M=sparse.bmat( [ [M_psi_Lap],[nf_block]] )
-B=np.concatenate( [B_psi_Lap,nf_rhs] )
 
-# Almost Good! But one little corner goes nuts.  Fixed that
-# by not dropping rows that are also dirichlet.  
+M_Lap,B_Lap=qg.nd.construct_matrix(op='laplacian',
+                                   dirichlet_nodes=dirichlet_nodes,
+                                   skip_dirichlet=False,
+                                   zero_tangential_nodes=tan_groups,
+                                   gradient_nodes=grad_nodes)
+
+
+M=sparse.bmat( [ [M_Lap],[nf_block]] )
+B=np.concatenate( [B_Lap,nf_rhs] )
+
+assert M.shape[0] == M.shape[1]
+
+# Good!
 # qg.psi,istop,itn,r1norm,r2norm,anorm,arnorm,acond,xnorm,v=sparse.linalg.lsqr( M, B )
-qg.phi[:]=0
-# Direct solve is reasonably fast and gave better result.
-qg.psi=sparse.linalg.spsolve(M.tocsr(),B)
-
+if coord==0:
+    qg.phi[:]=0
+    # Direct solve is reasonably fast and gave better result.
+    qg.psi=sparse.linalg.spsolve(M.tocsr(),B)
+else:
+    qg.psi[:]=0 # reduce clutter in plot
+    # Direct solve is reasonably fast and gave better result.
+    qg.phi=sparse.linalg.spsolve(M.tocsr(),B)
+    
 qg.plot_psi_phi(thinning=0.2)
+
 qg.plot_psi_phi_setup()
 
 ##
