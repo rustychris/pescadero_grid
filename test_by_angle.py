@@ -21,9 +21,11 @@ cmap=scmap.load_gradient('oc-sst.cpt')
 ##
 
 from stompy.grid import triangulate_hole, rebay
+from stompy.spatial import wkb2shp, constrained_delaunay
 
 six.moves.reload_module(unstructured_grid)
 six.moves.reload_module(exact_delaunay)
+six.moves.reload_module(constrained_delaunay)
 six.moves.reload_module(rebay)
 six.moves.reload_module(triangulate_hole)
 six.moves.reload_module(quads)
@@ -34,8 +36,6 @@ gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v07.pkl')
 gen_src.renumber_cells()
 
 ##
-
-from stompy.spatial import wkb2shp, constrained_delaunay
 
 CXYZ=constrained_delaunay.ConstrainedXYZField
 
@@ -79,75 +79,8 @@ for c in gen_src.valid_cell_iter():
         g.add_grid(g_sub)
 g.write_ugrid('combined-pieces.nc',overwrite=True)        
 
-##
-
-# Find the smallest set of cells that still has issues
-# all cells: issues in cell 3 (butano marsh),
-# junction of 11 and 9 (butano marsh to ck)
-# actually, lots of places.
-# but 1,0,6 is okay.
-# 1,0,6,9 is okay.
-# +10,11 is okay
-# +3 and its bad.
-# 3,9,10,11 is bad
-# 3,10,11 is bad.
-# 3,10 is bad.
-# 3 alone is bad.
-# if i use rebay grid, is it still bad? nope.
-qg=quads.QuadGen(gen_src,cells=[3],
-                 final='anisotropic',execute=False,
-                 nom_res=3.5,triangle_method='rebay',
-                 scales=[i_scale,j_scale])
-# qg.execute()
-qg.prepare_angles()
-qg.add_bezier(qg.gen)
-qg.g_int=qg.create_intermediate_grid_tri()
-qg.calc_psi_phi()
-qg.plot_psi_phi(thinning=0.15)
 
 ##
-qg.plot_psi_phi_setup()
-plt.axis('tight')
-plt.axis('equal')
-##
-
-M=qg.Mblocks[0][0]
-print(f"psi block: {M.shape}.  Deficient by {M.shape[1]-M.shape[0]}")
-
-# 8 dofs shy (regardless of src grid)
-# probably the number of corners?
-# 2 dirichlet nodes
-# 9 tangent groups (10 for j)
-# 11 gradient nodes
-# there are 20 corners
-# 2 are along a diagonal.
-# 
-
-# gmsh gave M.shape 4117x4125
-# rebay is 2441 x 2449
-
-##
-
-# What do I get if I solve just psi?
-# bad.
-psi1=sparse.linalg.lsqr( qg.Mblocks[0][0], qg.Bblocks[0])
-
-##
-
-zoom=(552547.5580429004, 552586.687028341, 4123426.3512172685, 4123455.5086225485)
-plt.figure(5).clf()
-fig,ax=plt.subplots(num=5)
-qg.g_int.contourf_node_values( psi2,200, cmap='flag',alpha=0.1)
-# qg.g_int.plot_nodes(labeler='id',clip=zoom)
-qg.g_int.plot_edges(lw=0.4, alpha=0.5,color='k')
-
-ax.axis('equal')
-ax.axis(zoom)
-
-##
-
-# am I missing a global conservation of mass?
-# like all of the inflows should balance the outflows?
 
 # For a rectangle:
 #  each non-corner node on closed boundaries solves
@@ -162,130 +95,15 @@ qg=quads.QuadGen(gen_src,cells=[3],
                  scales=[i_scale,j_scale])
 
 ## 
-# qg.execute()
-qg.prepare_angles()
-qg.add_bezier(qg.gen)
-qg.g_int=qg.create_intermediate_grid_tri()
-qg.internal_edges=[] # While testing, drop the internal edges
-qg.psi_phi_setup()
-
-# Manually add in the normal constraints
-@utils.add_to(qg)
-def calc_psi_phi(self):
-    self.psi_phi_setup(n_j_dirichlet=2)
-    
-    for coord in [0,1]: # signify we're working on psi vs. phi
-
-        if coord==0:
-            grad_nodes=dict(self.i_grad_nodes)
-            dirichlet_nodes=dict(self.i_dirichlet_nodes)
-            tan_groups=self.i_tan_groups
-        else:
-            grad_nodes=dict(self.j_grad_nodes)
-            dirichlet_nodes=dict(self.j_dirichlet_nodes)
-            tan_groups=self.j_tan_groups
-    
-        # Find these automatically.
-        # For ragged edges: not sure, but punt by dropping the
-        # the gradient BC on the acute end (node 520)
-        noflux_tris=[]
-        for n in np.nonzero(self.g_int.nodes['rigid'])[0]:
-            gen_n=self.g_int.nodes['gen_n'][n]
-            assert gen_n>=0
-            gen_angle=self.gen.nodes['turn'][gen_n]
-            # For now, ignore non-cartesian, and 90
-            # degree doesn't count
-            if (gen_angle>90) and (gen_angle<180):
-                # A ragged edge -- try out removing the gradient BC
-                # here
-                if n in grad_nodes:
-                    print(f"n {n}: angle={gen_angle} Dropping gradient BC")
-                    del grad_nodes[n]
-                continue
-
-            if gen_angle not in [270,360]: continue
-            if gen_angle==270:
-                print(f"n {n}: angle=270")
-            elif gen_angle==360:
-                print(f"n {n}: angle=360")
-
-            js=self.g_int.node_to_edges(n)
-            e2c=self.g_int.edge_to_cells()
-
-            for j in js:
-                if (e2c[j,0]>=0) and (e2c[j,1]>=0): continue
-                gen_j=self.g_int.edges['gen_j'][j]
-                angle=self.gen.edges['angle'][gen_j]
-                if self.g_int.edges['nodes'][j,0]==n:
-                    nbr=self.g_int.edges['nodes'][j,1]
-                else:
-                    nbr=self.g_int.edges['nodes'][j,0]
-                print(f"j={j}  {n} -- {nbr}  angle={angle}")
-                # Does the angle 
-                if (angle + 90*coord)%180. == 90.:
-                    print("YES")
-                    c=e2c[j,:].max()
-                    tri=self.g_int.cells['nodes'][c]
-                    while tri[2] in [n,nbr]:
-                        tri=np.roll(tri,1)
-                    noflux_tris.append( tri )
-
-        nf_block=sparse.dok_matrix( (len(noflux_tris),self.g_int.Nnodes()), np.float64)
-        nf_rhs=np.zeros( len(noflux_tris) )
-        node_xy=self.g_int.nodes['x'][:,:]
-
-        for idx,tri in enumerate(noflux_tris):
-            target_dof=idx # just controls where the row is written
-            d01=node_xy[tri[1],:] - node_xy[tri[0],:]
-            d02=node_xy[tri[2],:] - node_xy[tri[0],:]
-            # Derivation in sympy below
-            nf_block[target_dof,:]=0 # clear old
-            nf_block[target_dof,tri[0]]= -d01[0]**2 + d01[0]*d02[0] - d01[1]**2 + d01[1]*d02[1]
-            nf_block[target_dof,tri[1]]= -d01[0]*d02[0] - d01[1]*d02[1]
-            nf_block[target_dof,tri[2]]= d01[0]**2 + d01[1]**2
-            nf_rhs[target_dof]=0
-
-
-        M_Lap,B_Lap=self.nd.construct_matrix(op='laplacian',
-                                           dirichlet_nodes=dirichlet_nodes,
-                                           skip_dirichlet=False,
-                                           zero_tangential_nodes=tan_groups,
-                                           gradient_nodes=grad_nodes)
-
-
-        M=sparse.bmat( [ [M_Lap],[nf_block]] )
-        B=np.concatenate( [B_Lap,nf_rhs] )
-
-        assert M.shape[0] == M.shape[1]
-
-        # Direct solve is reasonably fast and gave better results.
-        soln=sparse.linalg.spsolve(M.tocsr(),B)
-        assert np.all(np.isfinite(soln))
-        
-        for grp in tan_groups:
-            # Making the tangent groups exact helps in contour tracing later
-            soln[grp]=soln[grp].mean()
-            
-        if coord==0:
-            self.psi=soln
-        else:
-            self.phi=soln
-
-qg.calc_psi_phi()
-
-
-## 
-qg.plot_psi_phi(thinning=0.2)
-
-#qg.plot_psi_phi_setup()
-
-
-## 
 # HERE:
+
+# psi/phi is better, but trace_contour is very slow, maybe stuck,
+#  above.
 #  1. Matrix solve is dicey in larger domain
 #     => try scikit fem.  Tried, but its pretty opaque.
-#  2. Intermediate grid gen is slow
-#     => add gmsh option for triangulate_hole. DONE.
+#        Instead, augmented BCs, somewhat ad-hoc, but so far
+#        yields square matrix (watch for ragged!), and solve
+#        is faster and more robust with spsolve.
 #  3. Scale specification is error prone:
 #     => Use orientation of linestring to set i/j axes
 
