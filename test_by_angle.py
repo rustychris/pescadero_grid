@@ -35,31 +35,203 @@ gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v07.pkl')
 
 gen_src.renumber_cells()
 
+
+# How to get scale in there...
+
+# CXYZ=constrained_delaunay.ConstrainedXYZField
+# 
+# i_tele=field.ApolloniusField.read_shps(['scale.shp'],value_field='i_tele')
+# j_tele=field.ApolloniusField.read_shps(['scale.shp'],value_field='j_tele')
+# 
+# i_linear=CXYZ.read_shps(['scale.shp'],value_field='i_linear')
+# j_linear=CXYZ.read_shps(['scale.shp'],value_field='j_linear')
+# 
+# i_scale=field.BinopField( i_tele, np.minimum, i_linear)
+# j_scale=field.BinopField( j_tele, np.minimum, j_linear)
+
+
+# This way of specifying scale is rough because i/j is not easy to determine,
+# and worse it changes when changing the set of cells.
+# One possibility is to set scale on edges of gen. Then when constructing
+# the swaths, each end would hit those edges, and pick up scale.
+
+# It's a departure from how scale is usually specified for triangles, although it's
+# not terrible. Those edges might have triangles on the other side, and the
+# scale on the gen side is exactly that scale needed to match up with the triangles.
+# Ragged edges are slightly tricky -- they may not work well with triangles -- but
+# the specification is probably okay, just taking the angle of the edge to then get
+# an i and j scale from the single original scale.
+
+if 1:
+    plt.figure(1).clf()
+    gen_src.plot_cells(labeler='id',centroid=True)
+    plt.axis('tight')
+    plt.axis('equal')
+
+six.moves.reload_module(quads)
+
+# Any chance a full domain will work? close..
+qg=quads.QuadGen(gen_src,
+                 cells=[0,1,5,6,7,8],
+                 # cells=[3],
+                 # cells=[0,1,2,4,5,6,7,8,9,10,11],
+                 # cells=[10,11],
+                 final='anisotropic',execute=False,
+                 triangle_method='gmsh',
+                 nom_res=3.5)
+
+@utils.add_to(qg)
+def set_scales(self):
+    # Probably not what I'll end up with, but try a diffusion approach
+    i_scale_dir={}
+    j_scale_dir={}
+
+    for j in np.nonzero( self.g_int.edges['gen_j']>= 0)[0]:
+        gen_j=self.g_int.edges['gen_j'][j]
+        scale=self.gen.edges['scale'][gen_j]
+        if scale in [0,np.nan]: continue
+        orient=self.gen.edges['angle'][gen_j] % 180
+        if orient==0:
+            # Add to i scale (?)
+            for n in self.g_int.edges['nodes'][j]:
+                i_scale_dir[n]=scale
+        elif orient==90:
+            # Add to j scale (?)
+            for n in self.g_int.edges['nodes'][j]:
+                j_scale_dir[n]=scale
+
+    nd=self.nd
+    M,B=nd.construct_matrix(op='laplacian',
+                            dirichlet_nodes=i_scale_dir,
+                            skip_dirichlet=True)
+    i_scale=sparse.linalg.spsolve(M.tocsr(),B)
+    M,B=nd.construct_matrix(op='laplacian',
+                            dirichlet_nodes=j_scale_dir,
+                            skip_dirichlet=True)
+    j_scale=sparse.linalg.spsolve(M.tocsr(),B)
+
+    self.i_scale=field.XYZField(X=qg.g_int.nodes['x'],F=i_scale)
+    self.j_scale=field.XYZField(X=qg.g_int.nodes['x'],F=j_scale)
+    self.scales=[self.i_scale,self.j_scale]
+
+qg.execute()
+qg.plot_result()
+
+# Now it's failing with the ragged cell near the pedestrian bridge.
+# this is patch_grid[31] when using all cells of gen
+
+# Doesn't fail when it's just cell 7
+# if using 0,6,7, then... still okay.
+# 0,1,5,6,7,8 .. ? this fails.
+# And its grid 17
+# no, this is another ragged edge.  in the lagoon
+# Looks like some nodes are getting bad pp values.
+# like this:
+#   patch_to_contour[1][17] =>
+# array([-0.52515289, -0.51811858, -0.51098604, -0.50366116, -0.49611719,
+#        -0.48835449, -0.4804278 , -0.47229981, -0.46395449, -0.45541088,
+#        -0.44667622, -0.52515289])
+
+
 ##
 
-CXYZ=constrained_delaunay.ConstrainedXYZField
+# The internal edge at the N end of the connector has a zero-width grid.
+# Fixed the bogus internal edges, but something is amiss with with
+# this one.
+# Cell 82 is the culprit.
+# Is it from the ragged edge handling? nope.
+# or maybe it's an error in g_final (qg.g_not_final) HERE
 
-i_tele=field.ApolloniusField.read_shps(['scale.shp'],value_field='i_tele')
-j_tele=field.ApolloniusField.read_shps(['scale.shp'],value_field='j_tele')
-
-i_linear=CXYZ.read_shps(['scale.shp'],value_field='i_linear')
-j_linear=CXYZ.read_shps(['scale.shp'],value_field='j_linear')
-
-i_scale=field.BinopField( i_tele, np.minimum, i_linear)
-j_scale=field.BinopField( j_tele, np.minimum, j_linear)
-
-## 
 plt.figure(1).clf()
-gen_src.plot_cells(labeler='id',centroid=True)
+qg.g_final2.plot_cells(labeler='id',centroid=True)
 plt.axis('tight')
 plt.axis('equal')
 
+
+## 
+# HERE
+zoom=(552573.3257994705, 552606.492118541, 4124415.575118965, 4124440.2893760786)
+
+plt.figure(1).clf()
+qg.g_not_final.plot_edges(lw=0.5,clip=zoom)
+
+# in g_final2 and g_not_final, the nodes in question are
+#  5018 and 3304
+# in g_int, those are 331 and 434.
+qg.g_int.plot_nodes(clip=zoom,labeler='id')
+
+# This does show doubled edges
+# in the middle there are nodes differing by 1e-10
+plt.axis('tight')
+plt.axis('equal')
+plt.axis(zoom)
+# qg.g_int.plot_nodes(clip=zoom,labeler='id')
+
+# nodes 331, 434.  might have changed, though.
+
+##
+qg.plot_psi_phi_setup()
+# qg.g_int.contourf_node_values(psi,40,alpha=0.2,cmap='jet')
+
+## 
+qg.set_scales()
+
+qg.g_final=qg.create_final_by_patches()
+
+qg.plot_result(num=100+c)
+
+# With the full domain, if include internal edges, I'm over-constrained
+# by one degree M.shape: (26548, 26547)
+# If I remove all internal edges, then it works.
+# But there are multiple internal edges.
+# Is it something about the dirichlet BC falling on an internal edge?
+
 ##
 
+# Show where scale was specified on gen edges:
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+ax.set_position([0,0,1,1])
+ax.axis('off')
+scale=qg.gen.edges['scale']
+sel=np.isfinite(scale) & (scale>0)
+qg.g_final.plot_edges(lw=0.3,alpha=0.3,color='k')
+
+qg.gen.plot_edges(mask=sel,values=scale[sel],cmap='jet',labeler='scale')
+
+from stompy.plot import plot_utils
+plot_utils.scalebar([0.1,0.8],L=10,fractions=[0,0.1,0.25,0.5,1.0],
+                    dy=0.03,style='ticks',
+                     xy_transform=ax.transAxes,ax=ax)
+
+
+##
+# Wondering if something special should be done at the sting?
+#  Dropping the no-flux BC at a sting maybe fixed psi, but now
+#  I'm one short on phi.
+# Best guess is that a sting implies an extra, single-node, tangent
+# group (to avoid having a no-flux BC at the sting), and adding
+# a gradient BC at the sting for the other field.
+
+#qg.plot_psi_phi_setup()
+
+##
+
+# plt.figure(1).clf()
+# scale=qg.gen.edges['scale']
+# sel=np.isfinite(scale) & (scale>0)
+# qg.g_int.plot_edges(lw=0.3,alpha=0.3,color='k')
+# qg.gen.plot_edges(mask=sel,values=scale[sel],cmap='jet')
+# 
+# qg.g_int.contourf_node_values(j_scale,30,cmap='jet')
+
+
+## 
 # Make sure that each individual cell works:
-# good.
+# c=1 is failing... that's the lagoon.  Maybe working now.
 for c in gen_src.valid_cell_iter():
     qg=quads.QuadGen(gen_src,cells=[c],final='anisotropic',execute=False,
+                     triangle_method='gmsh',
                      nom_res=3.5,
                      scales=[i_scale,j_scale])
     qg.execute()
@@ -68,8 +240,6 @@ for c in gen_src.valid_cell_iter():
     qg.g_final.write_ugrid('pieces_cell%03d.nc'%c,
                            overwrite=True)
     
-##
-
 g=None
 for c in gen_src.valid_cell_iter():
     g_sub=unstructured_grid.UnstructuredGrid.read_ugrid('pieces_cell%03d.nc'%c)
@@ -97,7 +267,6 @@ qg=quads.QuadGen(gen_src,cells=[3],
 ## 
 # HERE:
 
-# psi/phi is better, but trace_contour is very slow, maybe stuck,
 #  above.
 #  1. Matrix solve is dicey in larger domain
 #     => try scikit fem.  Tried, but its pretty opaque.
