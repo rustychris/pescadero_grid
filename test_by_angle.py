@@ -31,36 +31,11 @@ six.moves.reload_module(triangulate_hole)
 six.moves.reload_module(quads)
 
 # v06 puts angles on half-edges
-gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v07.pkl')
+gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v08.pkl')
+gen_src.delete_orphan_edges()
+# gen_src.delete_orphan_nodes()
 
 gen_src.renumber_cells()
-
-
-# How to get scale in there...
-
-# CXYZ=constrained_delaunay.ConstrainedXYZField
-# 
-# i_tele=field.ApolloniusField.read_shps(['scale.shp'],value_field='i_tele')
-# j_tele=field.ApolloniusField.read_shps(['scale.shp'],value_field='j_tele')
-# 
-# i_linear=CXYZ.read_shps(['scale.shp'],value_field='i_linear')
-# j_linear=CXYZ.read_shps(['scale.shp'],value_field='j_linear')
-# 
-# i_scale=field.BinopField( i_tele, np.minimum, i_linear)
-# j_scale=field.BinopField( j_tele, np.minimum, j_linear)
-
-
-# This way of specifying scale is rough because i/j is not easy to determine,
-# and worse it changes when changing the set of cells.
-# One possibility is to set scale on edges of gen. Then when constructing
-# the swaths, each end would hit those edges, and pick up scale.
-
-# It's a departure from how scale is usually specified for triangles, although it's
-# not terrible. Those edges might have triangles on the other side, and the
-# scale on the gen side is exactly that scale needed to match up with the triangles.
-# Ragged edges are slightly tricky -- they may not work well with triangles -- but
-# the specification is probably okay, just taking the angle of the edge to then get
-# an i and j scale from the single original scale.
 
 if 1:
     plt.figure(1).clf()
@@ -68,56 +43,34 @@ if 1:
     plt.axis('tight')
     plt.axis('equal')
 
+## 
 six.moves.reload_module(quads)
 
+# Failing on [14,1], probably because I'm using a ragged cell
+# to start the swath, and it gets double wide?
+
+
+#  Maybe the swath processing is not such a great idea?
+
+# What about putting more detailed cross-section information on
+# some of the edges?
+#   Each edge in gen then has something like "5 edges"
+#   or "spaced at 5m", or "unspecified"
+
 # Any chance a full domain will work? close..
+# all broken now.
 qg=quads.QuadGen(gen_src,
-                 # cells=[0,1,5,6,7,8],
-                 # cells=[3],
-                 # cells=[0,1,2,4,5,6,7,8,9,10,11],
-                 # cells=[10,11],
+                 # cells=[1,2,12],
                  final='anisotropic',execute=False,
                  triangle_method='gmsh',
                  nom_res=3.5)
 
 qg.execute()
 qg.plot_result()
+qg.g_final.write_ugrid('all_quads.nc')
 
 ##
 
-
-qg.set_scales()
-
-qg.g_final=qg.create_final_by_patches()
-
-qg.plot_result(num=100+c)
-
-# With the full domain, if include internal edges, I'm over-constrained
-# by one degree M.shape: (26548, 26547)
-# If I remove all internal edges, then it works.
-# But there are multiple internal edges.
-# Is it something about the dirichlet BC falling on an internal edge?
-
-##
-
-# Show where scale was specified on gen edges:
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
-ax.set_position([0,0,1,1])
-ax.axis('off')
-scale=qg.gen.edges['scale']
-sel=np.isfinite(scale) & (scale>0)
-qg.g_final.plot_edges(lw=0.3,alpha=0.3,color='k')
-
-qg.gen.plot_edges(mask=sel,values=scale[sel],cmap='jet',labeler='scale')
-
-from stompy.plot import plot_utils
-plot_utils.scalebar([0.1,0.8],L=10,fractions=[0,0.1,0.25,0.5,1.0],
-                    dy=0.03,style='ticks',
-                     xy_transform=ax.transAxes,ax=ax)
-
-
-##
 # Wondering if something special should be done at the sting?
 #  Dropping the no-flux BC at a sting maybe fixed psi, but now
 #  I'm one short on phi.
@@ -125,10 +78,7 @@ plot_utils.scalebar([0.1,0.8],L=10,fractions=[0,0.1,0.25,0.5,1.0],
 # group (to avoid having a no-flux BC at the sting), and adding
 # a gradient BC at the sting for the other field.
 
-#qg.plot_psi_phi_setup()
-
 ##
-
 # plt.figure(1).clf()
 # scale=qg.gen.edges['scale']
 # sel=np.isfinite(scale) & (scale>0)
@@ -140,12 +90,15 @@ plot_utils.scalebar([0.1,0.8],L=10,fractions=[0,0.1,0.25,0.5,1.0],
 
 ## 
 # Make sure that each individual cell works:
-# c=1 is failing... that's the lagoon.  Maybe working now.
+# One issue - scale info is getting dropped when I select a single cell.
+
+
+## 
+
 for c in gen_src.valid_cell_iter():
     qg=quads.QuadGen(gen_src,cells=[c],final='anisotropic',execute=False,
                      triangle_method='gmsh',
-                     nom_res=3.5,
-                     scales=[i_scale,j_scale])
+                     nom_res=3.5)
     qg.execute()
     qg.plot_result(num=100+c)
 
@@ -162,31 +115,8 @@ for c in gen_src.valid_cell_iter():
 g.write_ugrid('combined-pieces.nc',overwrite=True)        
 
 
-##
-
-# For a rectangle:
-#  each non-corner node on closed boundaries solves
-#  the laplacian, along with each internal node.
-#  each set of open boundary nodes implies a constant
-#  value.
-six.moves.reload_module(quads)
-
-qg=quads.QuadGen(gen_src,cells=[3],
-                 final='anisotropic',execute=True,
-                 nom_res=3.5,triangle_method='gmsh',
-                 scales=[i_scale,j_scale])
-
-## 
-# HERE:
-
-#  above.
-#  1. Matrix solve is dicey in larger domain
-#     => try scikit fem.  Tried, but its pretty opaque.
-#        Instead, augmented BCs, somewhat ad-hoc, but so far
-#        yields square matrix (watch for ragged!), and solve
-#        is faster and more robust with spsolve.
-#  3. Scale specification is error prone:
-#     => Use orientation of linestring to set i/j axes
+plt.figure(1).clf()
+g.plot_edges(color='k',lw=0.5)
 
 ##
 
