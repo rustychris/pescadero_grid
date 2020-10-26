@@ -42,55 +42,283 @@ if 1:
     plt.axis('equal')
 
 ## 
-six.moves.reload_module(quads)
-
-# What about putting more detailed cross-section information on
-# some of the edges?
-#   Each edge in gen then has something like "5 edges"
-#   or "spaced at 5m", or "unspecified"
-
-# The motivation is that currently scale is global.  A small
-# change in one end of the domain might trace to the other end,
-# which means that generation has to be global, and also
-# leads to artifacts in cell sizes that have to be smoothed in post.
-
-# So instead, allow for external and internal edges to specify 
-# vertex counts.
-
-# This is like it used to be, with dij.
-# Need to avoid having to fill in dij on every edge.
-# maybe it's summed up between rigid nodes?
-
-
-# Case studies:
-# Lagoon:
-#  1 ragged corner
-#  1 sting.
-# Currently these introduce 3 bands of cells.
-# I would like to be able to even out the two sides
-# of the sting, some distance away from the sting.
-
-# What if patches have to be created manually, and have
-# some requirements (like non-overlapping in ij)
-# That would simplify a lot of the generation
-# Then maybe the bezier lines incorporate all of the
-# quad lines, but you can choose to grid one cell
-# at a time.
-
-# Within a cell, we still need to relax edges.
-# That's already a necessity (to get true orthogonal cells),
-# 1. Work up the relax/orthogonal code
-# 2. Figure out how to set the node counts.  Should I just set
-#    this on the inputs?  It has to be consistent across the
-#    edges in a cell.
-
-## 
 qg=quads.QuadGen(gen_src,
                  cells=[13],
                  final='anisotropic',execute=False,
                  triangle_method='gmsh',
                  nom_res=3.5)
 
+# Can I speed this up a bit?
+# 46s, with 37 in create_final_by_patches
+#   15s 2300 delaunay node insertions, from trace_and_insert_contour
+#   13s in fields_to_xy
+# 10s in construct_matrix
+# What is the real value in trace_and_insert_contour?
+%prun -s cumulative qg.execute()
+
+##
+
+# So I can probably save a good bit of time by finding intersections in
+# a different way .
+
+class IntersectingLines(unstructured_grid.UnstructuredGrid):
+    """ 
+    Lightweight alternative to exact_delaunay when the goal is to 
+    just add nodes at intersecting constraints
+    """
+    edge_dtype=(unstructured_grid.UnstructuredGrid.edge_dtype +
+                [ ('constrained',np.bool8) ] )
+
+    def __init__(self,*a,**k):
+        super(IntersectingLines,self).__init__(*a,**k)
+        self.edge_defaults['constrained']=True
+        
+    def split_constraint(self,x,j):
+        j_new,n_new=self.split_edge_basic(j=j,x=x)
+        return n_new
+    
+    def add_constrained_linestring(self,trace_points,
+                                   on_intersection='insert', 
+                                   on_exists='stop', # 'stop','exception',
+                                   closed=False):
+        # => trace_nodes,trace_edges
+        nodes=[self.add_or_find_node(x=x)
+               for x in trace_points]
+        result_nodes=[nodes[0]]
+        result_edges=[]
+
+        assert on_intersection=='insert',"I'm not as general as exact_delaunay"
+        
+        if not closed:
+            ab_list=zip(nodes[:-1],nodes[1:])
+        else:
+            ab_list=zip(nodes,np.roll(nodes,-1))
+            
+        for a,b in ab_list:
+            sub_nodes,sub_edges=self.add_constraint_and_intersections(a,b,
+                                                                      on_exists=on_exists)
+            result_nodes+=sub_nodes[1:]
+            result_edges+=sub_edges
+
+            if (on_exists=='stop') and (sub_nodes[-1]!=b):
+                print("Stopping early")
+                break
+        return result_nodes,result_edges
+
+    def add_constraint_and_intersections(self,nA,nB,on_exists='stop'):
+        all_segs=[ [nA,nB] ]
+        result_nodes=[nA]
+        result_edges=[]
+
+        # Each iteration pull a segment, test for intersections, and
+        # either add as edge, or split intersecting constraints and
+        # push the two pieces onto the stack
+        while all_segs:
+            nA,nB=all_segs.pop(0)
+
+            xys=self.nodes['x'][ [nA,nB], :]
+            xxyy=[ xys[:,0].min(), xys[:,0].max(),
+                   xys[:,1].min(), xys[:,1].max()]
+
+            j=self.nodes_to_edge(nA,nB)
+            if j is not None:
+                # Already exists:
+                if on_exists=='exception':
+                    raise Exception("Constraint already exists")
+                elif on_exists=='ignore':
+                    pass
+                elif on_exists=='stop':
+                    break
+                else:
+                    assert False,"Bad value %s for on_exists"%on_exists
+                
+            j_sel=np.nonzero( self.edge_clip_mask(xxyy,ends=True) )[0]
+
+            segAB=xys
+            seg_other=self.nodes['x'][self.edges['nodes'][j_sel]]
+            
+            # Would AB intersect any of j_sel?
+            for j_cross,seg in zip(j_sel,seg_other):
+
+                x_int,alphas=utils.segment_segment_intersection(segA,seg)
+
+                if x_int is None:
+                    continue
+                
+                # Handle interecting case
+                if alphas[1]==0:
+                    # segA crosses first node of seg
+                    coll_node=self.edges['nodes'][j_cross,0]
+                    all_segs.insert(0, [nA,coll_node] )
+                    all_segs.insert(1, [coll_node,nB] )
+                    continue
+                elif alphas[1]==1:
+                    # segA crosses second node of seg
+                    coll_node=self.edges['nodes'][j_cross,1]
+                    all_segs.insert(0, [nA,coll_node] )
+                    all_segs.insert(1, [coll_node,nB] )
+                    continue
+                else:
+                    n_new=self.split_constraint(j=j_cross,x=x_int)
+
+                    # Why are these here?
+                    if nB!=n_new:
+                        all_segs.insert(0,[n_new,nB])
+                    if nA!=n_new:
+                        all_segs.insert(0,[nA,n_new])
+                    continue
+            result_nodes.append(nB)
+            assert j is not None
+            result_edges.append(j)
+                
+        return result_nodes,result_edges
+        
+    def bulk_init(self,points):
+        self.nodes=np.zeros(len(points),self.node_dtype)
+        self.nodes[:]=self.node_defaults
+        self.nodes['x']=points
+
+
+g_src=unstructured_grid.UnstructuredGrid(max_sides=4)
+g_src.add_rectilinear([0,0],[10,10],11,11)
+
+g_final=IntersectingLines(extra_edge_fields=[
+    ('angle',np.float64),
+    ('psiphi',np.float64,2)])
+
+g_final.bulk_init(g_src.nodes['x'])
+
+plt.figure(1).clf()
+g_final.plot_nodes()
+
+for j in g_src.valid_edge_iter():
+    g_final.add_constrained_linestring( g_src.nodes['x'][g_src.edges['nodes'][j]] )
+    
+
+##
+
+
+
+
+## Crap that doesn't work
+# Start with fractional, then come back to coerce to
+# integers.
+# Hmmm...
+#   If I do this per edge, I'm going to get some distortion
+#   Whatever resolution that comes out of this step will not
+#   quite be the same distribution as what comes out of the
+#   psi/phi field. I want psi/phi to dictate distributions as
+#   much as possible
+#   Say I nail down the counts along edge-sets joining
+#   rigid nodes.  That's okay, but then to actually be able
+#   to generate the grid one patch at a time, I need the distribution
+#   of nodes on those edges. Assuming that these are generally short
+#   sections across a channel, maybe it's okay to just set them.
+
+# plan:
+#   What about going back to just setting ij coordinates on nodes?
+#   But that puts a lot of pressure on the user to come up with
+#   good spacings.  i,j could be used just to get general scales,
+#   and to get specific spacing only on internal edges.
+
+# all of these suck.
+
+# Is it better just to got with something considerably more basic?
+
+ij_counts=np.zeros( (gen.Nedges(),2), np.float32 )
+
+# Make a parent grid that has edges only between fixed nodes.
+
+def end_p(n,js):
+    if len(js)!=2: return True
+    if gen.edges['angle'][js[0]] != gen.edges['angle'][js[1]]:
+        return True
+    return False
+
+strings=gen.extract_linear_strings(end_func=end_p)
+    
+## 
+gen_parent=unstructured_grid.UnstructuredGrid(max_sides=100)
+
+gen_to_parent={} # node indices
+
+for s in strings:
+    nparents=[]
+    
+    for n in [s[0],s[-1]]:
+        if n not in gen_to_parent:
+            gen_to_parent[n]=gen_parent.add_node( x=gen.nodes['x'][n] )
+        nparents.append( gen_to_parent[n] )
+    gen_parent.add_edge(nodes=nparents)
+
+##
+
+gen_parent.plot_edges(color='g',lw=1.)
+plt.axis('tight')
+plt.axis('equal')
+
+## 
+quads.plot_gen_bezier(gen)
+gen.plot_nodes(mask=[0],color='r',sizes=30)
+plt.axis( (552079.815212804, 552424.5384625637, 4124455.1432898846, 4124643.825499759) )
+
+
+## 
+plt.figure(1).clf()
+gen.plot_cells(labeler='id',centroid=True)
+gen.plot_edges(labeler='angle')
+gen.plot_nodes(labeler='id',mask=[n],color='r')
+plt.axis('tight')
+plt.axis('equal')
+plt.axis( (552079.815212804, 552424.5384625637, 4124455.1432898846, 4124643.825499759) )
+    
+    
+##     
+if 0: # old gen bezier code    
+    cycles=gen.find_cycles(max_cycle_len=gen.Nnodes()
+    assert len(cycles)==1
+    cycle=cycles[0]
+
+    for a,b,c in zip( np.roll(cycle,1),
+                      cycle,
+                      np.roll(cycle,-1) ):
+        ab=gen.nodes['x'][b] - gen.nodes['x'][a]
+        bc=gen.nodes['x'][c] - gen.nodes['x'][b]
+
+        j_ab=gen.nodes_to_edge(a,b)
+        j_bc=gen.nodes_to_edge(b,c)
+
+        # This makes use of angle being defined relative to a CCW
+        # cycle, not the order of edge['nodes']
+        dtheta_ij=(gen.edges['angle'][j_bc] - gen.edges['angle'][j_ab])*np.pi/180.
+        dtheta_ij=(dtheta_ij+np.pi)%(2*np.pi) - np.pi
+
+        # Angle of A->B
+        theta0=np.arctan2(ab[1],ab[0])
+        theta1=np.arctan2(bc[1],bc[0])
+        dtheta=(theta1 - theta0 + np.pi) % (2*np.pi) - np.pi
+
+        theta_err=dtheta-dtheta_ij
+        # Make sure we're calculating error in the shorter direction
+        theta_err=(theta_err+np.pi)%(2*np.pi) - np.pi
+
+        cp0 = gen.nodes['x'][b] + utils.rot(  theta_err/2, 1./3 * -ab )
+        if gen.edges['nodes'][j_ab,0]==b:
+            cp_i=1
+        else:
+            cp_i=2
+        gen.edges['bez'][j_ab,cp_i] = cp0
+
+        cp1 = gen.nodes['x'][b] + utils.rot( -theta_err/2, 1./3 * bc )
+        if gen.edges['nodes'][j_bc,0]==b:
+            cp_i=1
+        else:
+            cp_i=2
+        gen.edges['bez'][j_bc,cp_i] = cp1
+
+
+
+##
 qg.execute()
 qg.plot_result()
 
