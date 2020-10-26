@@ -35,33 +35,45 @@ gen_src.delete_orphan_edges()
 
 gen_src.renumber_cells()
 
-
 if 1:
     plt.figure(1).clf()
     gen_src.plot_cells(labeler='id',centroid=True)
     plt.axis('tight')
     plt.axis('equal')
 
+quads.prepare_angles_halfedge(gen_src)
+
+gen_src.plot_edges(mask=np.isfinite(gen_src.edges['angle']),
+                   color='r',lw=2)
+quads.add_bezier(gen_src)
+quads.plot_gen_bezier(gen_src)
+
+## 
 grids=[]
 
-for c in [14]: # gen_src.valid_cell_iter():
-    qg=quads.QuadGen(gen_src,
-                     cells=[c],
-                     execute=False,
-                     triangle_method='gmsh',
-                     nom_res=3.5)
+for c in gen_src.valid_cell_iter():
+    try:
+        qg=quads.QuadGen(gen_src,
+                         cells=[c],
+                         execute=False,
+                         triangle_method='gmsh',
+                         nom_res=3.5)
 
-    # Can I speed this up a bit?
-    # 46s, with 37 in create_final_by_patches
-    #   15s 2300 delaunay node insertions, from trace_and_insert_contour
-    #   13s in fields_to_xy
-    # 10s in construct_matrix
-    # What is the real value in trace_and_insert_contour?
-    # probably could speed it up, but it's not worth the distraction
-    g_final=qg.execute()
-    # qg.plot_result()
-    grids.append(g_final)
-
+        # Can I speed this up a bit?
+        # 46s, with 37 in create_final_by_patches
+        #   15s 2300 delaunay node insertions, from trace_and_insert_contour
+        #   13s in fields_to_xy
+        # 10s in construct_matrix
+        # What is the real value in trace_and_insert_contour?
+        # probably could speed it up, but it's not worth the distraction
+        g_final=qg.execute()
+        grids.append(g_final)
+    except:
+        print()
+        print("--------------------FAIL--------------------")
+        print()
+        continue
+    
 comb=unstructured_grid.UnstructuredGrid(max_sides=4)
 
 for g in grids:
