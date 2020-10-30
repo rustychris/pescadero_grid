@@ -29,11 +29,12 @@ six.moves.reload_module(triangulate_hole)
 six.moves.reload_module(orthogonalize)
 six.moves.reload_module(quads)
 
-# v06 puts angles on half-edges
-gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v11.pkl')
-gen_src.delete_orphan_edges()
+# 13 is good.
+# 14 is playing with non-90 angles
+gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v14.pkl')
 
-gen_src.renumber_cells()
+#gen_src.delete_orphan_edges()
+#gen_src.renumber_cells()
 
 if 1:
     plt.figure(1).clf()
@@ -51,35 +52,98 @@ quads.plot_gen_bezier(gen_src)
 ## 
 grids=[]
 
-for c in gen_src.valid_cell_iter():
-    try:
-        qg=quads.QuadGen(gen_src,
-                         cells=[c],
-                         execute=False,
-                         triangle_method='gmsh',
-                         nom_res=3.5)
 
-        # Can I speed this up a bit?
-        # 46s, with 37 in create_final_by_patches
-        #   15s 2300 delaunay node insertions, from trace_and_insert_contour
-        #   13s in fields_to_xy
-        # 10s in construct_matrix
-        # What is the real value in trace_and_insert_contour?
-        # probably could speed it up, but it's not worth the distraction
-        g_final=qg.execute()
-        grids.append(g_final)
-    except:
-        print()
-        print("--------------------FAIL--------------------")
-        print()
-        continue
-    
+#cells=[10, 16, 17, 28, 35, 36, 37, 44, 45, 46] # FAILS
+#cells=[10, 16, 17, 28, 35, 36, 37, 45, 46] # FAILS
+#cells=[10, 16, 17, 28, 35, 36, 46]  # OKAY
+#cells=[10, 16, 17, 28, 35, 36, 45, 46] # FAILS
+#cells=[10, 16, 17, 28, 45, 46] # FAILS
+#cells=[10, 16, 17, 45, 46] # FAILS
+#cells=[10, 45, 46] # FAILS
+#cells=[45, 46] #FAILS, 1 extra dof
+#cells=[45] # OKAY
+#cells=[46] # OKAY
+
+# Really do need a way to specify spacing at a finer scale.
+
+# Option:
+#    Allow specifying edge count (maybe as negative scale).
+#      Edge counts are automatically converted to scales when
+#      building the interpolated scale.
+#      Scales on an edge will be locally evaluated, i.e. not
+#      subject to interpolation.
+#    Swaths scan the edges perpendicular to the swath
+#      if an edge has a count, contour values for the span
+#      of that edge will be generated according to the count.
+#    So I have a swath, with its constituent patches.
+# 
+
+
+#for c in [46]: # gen_src.valid_cell_iter():
+#try:
+qg=quads.QuadGen(gen_src,
+                 cells=cells, # [c],
+                 execute=False,
+                 triangle_method='gmsh',
+                 nom_res=3.5)
+
+g_final=qg.execute()
+
+# This is failing with ERROR:quad_laplacian:M.shape: (18287, 18288)
+# i.e. underconstrained by 1 dof.
+# also there are some errors early on:
+# maybe hit a dead end -- boundary maybe not closed
+# edge centered at [ 553644.60355219 4123404.63396081] traversed twice
+# this is during psi setup.
+
+qg.plot_psi_phi_setup()
+
+# So I think that this is b/c the sting is now not quite 360deg, but
+# should be treated more like it is?
+# But I can't just put an nf triangle in there, can I?  What if
+# it had a gentle angle on both sides?
+#
+
+
+
+## 
+grids.append(g_final)
+# except:
+#     print()
+#     print("--------------------FAIL--------------------")
+#     print()
+#     continue
+
+##
+
+plt.figure(2).clf()
+fig,ax=plt.subplots(num=2)
+# qg.g_not_final.plot_edges(ax=ax) # DT
+qg.g_final2.plot_edges(ax=ax) # patches
+qg.gen.plot_edges(labeler='scale',mask=qg.gen.edges['scale']>0,lw=0.5,color='k')
+
+# Swaths may be smaller than an edge in gen. So gen might say put 5 edges here,
+# but then the swath won't necessarily line up with that.
+# A: set spacing of nodes at the gen level
+# B: convert everything to resolution.
+
+# When gridding 
+
+
+##     
 comb=unstructured_grid.UnstructuredGrid(max_sides=4)
 
 for g in grids:
     comb.add_grid(g)
 
 comb.write_ugrid('combined-20201026a.nc',overwrite=True)
+
+# HERE:
+#   Start adjusting resolutions, still on the separate grids.
+#   Make a QGIS interface, so I can select one or more cells, generate
+#   a grid.
+
+
 
 ##     
 plt.clf()
