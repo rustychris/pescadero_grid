@@ -78,6 +78,37 @@ grids=[]
 #    So I have a swath, with its constituent patches.
 # 
 
+# In the interest of being able to finish the grid,
+# just avoid ragged edges.
+# Can start to think about what it would take to have
+# self-contained, cell-by-cell generation.
+# Say each cell has to be a rectangle.
+# Edges can have a target resolution, a target number
+# of cells, or nothing.
+# Nodes are positioned globally along the edges in the generating
+# grid.  Counts must be consistent within each rectangle, and that's
+# where the real challenge is.
+
+# Some edges in gen can be fused (when a specific count is not
+# given, but set from scale).
+# Then all edges have a target number of nodes, and some measure
+# of how tightly that is specified.
+# Each cell then implies two equations, forcing the sum of
+# i-steps and j-steps to both be zero.
+# Edges with two adjacent cells will appear in 2 equations.
+# There is probably an assumption somewhere in here that the
+# cells are convex.  I'm okay with that.
+
+# For unknowns, what if each cell gets two scalar unknowns,
+# one corresponding to a stretching of +i vs -i edges, the
+# other for +j/-j edges.
+
+# Then each edge gets a target count and some scaling of the adjustments
+# (possibly from two adjustment factors).
+
+# Forget it -- just require that any edge shared by two cells has an exact
+# count, and that all cells must be internally consistent.
+
 
 #for c in [46]: # gen_src.valid_cell_iter():
 #try:

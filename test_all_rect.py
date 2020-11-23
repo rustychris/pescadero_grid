@@ -14,6 +14,8 @@ from matplotlib import colors
 import itertools
 
 import stompy.plot.cmap as scmap
+from stompy.spatial import linestring_utils
+
 turbo=scmap.load_gradient('turbo.cpt')
 cmap=scmap.load_gradient('oc-sst.cpt')
 
@@ -89,28 +91,14 @@ def snap_angles(gen):
 snap_angles(gen_src)
 quads.prepare_angles_halfedge(gen_src)
 
-## 
 gen_src.plot_edges(mask=np.isfinite(gen_src.edges['angle']),
                    color='r',lw=2)
 quads.add_bezier(gen_src)
 quads.plot_gen_bezier(gen_src)
 
-## 
+##
+
 grids=[]
-
-
-#cells=[10, 16, 17, 28, 35, 36, 37, 44, 45, 46] # FAILS
-#cells=[10, 16, 17, 28, 35, 36, 37, 45, 46] # FAILS
-#cells=[10, 16, 17, 28, 35, 36, 46]  # OKAY
-#cells=[10, 16, 17, 28, 35, 36, 45, 46] # FAILS
-#cells=[10, 16, 17, 28, 45, 46] # FAILS
-#cells=[10, 16, 17, 45, 46] # FAILS
-#cells=[10, 45, 46] # FAILS
-#cells=[45, 46] #FAILS, 1 extra dof
-#cells=[45] # OKAY
-#cells=[46] # OKAY
-
-# Really do need a way to specify spacing at a finer scale.
 
 # Option:
 #    Allow specifying edge count (maybe as negative scale).
@@ -124,11 +112,7 @@ grids=[]
 #    So I have a swath, with its constituent patches.
 # 
 
-# In the interest of being able to finish the grid,
-# just avoid ragged edges.
-# Can start to think about what it would take to have
-# self-contained, cell-by-cell generation.
-# Say each cell has to be a rectangle.
+# each cell has to be a rectangle.
 # Edges can have a target resolution, a target number
 # of cells, or nothing.
 # Nodes are positioned globally along the edges in the generating
@@ -155,80 +139,459 @@ grids=[]
 # Forget it -- just require that any edge shared by two cells has an exact
 # count, and that all cells must be internally consistent.
 
+# Need a method that will look at a single cell, and the data on its
+# edges, and distribute nodes on the perimeter.
 
-#for c in [46]: # gen_src.valid_cell_iter():
-#try:
+c=21 # lagoon
+
+plt.figure(1).clf()
+gen_src.plot_cells(mask=[c],alpha=0.3)
+plt.axis('tight')
+plt.axis('equal')
+
+js=gen_src.cell_to_edges(c)
+gen_src.plot_edges(mask=js,labeler=lambda i,r: r['scale'])
+
+# Still not there..
+# There is a disconnect between how I'm tryin to treat the "short" ends,
+# where I want to enforce the number of edges in specific segments, but then
+# on the opposite side I want it to be evenly distributed. These won't match up
+# in psi/phi, but I'm assuming that over the long dimension, it's not too far out
+# from orthogonal. But then the long edges, I will definitely get into trouble
+# if I force the spacing independently on the two opposite sides. That was the
+# downfall of the earliest attempts at this.
+
+# [A] Forget all of this, go back to directly constructing quads and then relaxing
+#     to orthogonal.
+# [B] Create an optimization problem for the location of nodes.  Nodes on shared edges
+#     must be set directly.  Nodes on unshared edges can be moved around to satisfy
+#     some mixture of a density field and psi/phi contours.
+# [C] Just go back to how I was doing it, and be more careful about ragged edges, and
+#     deal with the annoyance of global resolution dependence.
+# [D] Scrap the whole, and use Janet.
+
+# I have to relax the grid regardless, so what I want here is the shortest path to
+# getting a quad grid that has the right discrete properties and is close enough
+# to orthogonal that relaxation will converge.
+
+# What about something more along the lines of generating quad patches, set some
+# subset of nodes as fixed, and optimize the rest?
+# That tosses out tons of the complexity.
+# For the moment, I take the same sort of input
+
+## 
 qg=quads.QuadGen(gen_src,
-                 cells=cells, # [c],
+                 cells=[c],
                  execute=False,
+                 angle_source='existing',
                  triangle_method='gmsh',
                  nom_res=3.5)
 
-g_final=qg.execute()
+# Alternate execution -- don't do the patch processing.
+# That's the part I want to tweak
+qg.process_internal_edges(qg.gen) # N.B. this flips angles
+qg.g_int=qg.create_intermediate_grid_tri()
+qg.calc_psi_phi()
 
-# This is failing with ERROR:quad_laplacian:M.shape: (18287, 18288)
-# i.e. underconstrained by 1 dof.
-# also there are some errors early on:
-# maybe hit a dead end -- boundary maybe not closed
-# edge centered at [ 553644.60355219 4123404.63396081] traversed twice
-# this is during psi setup.
+##
 
-qg.plot_psi_phi_setup()
+# Here -- I've got a nice psi/phi field.
+# I have some edges with negative scale.  Other edges
+# will get just the ambient scale.
 
-# So I think that this is b/c the sting is now not quite 360deg, but
-# should be treated more like it is?
-# But I can't just put an nf triangle in there, can I?  What if
-# it had a gentle angle on both sides?
-#
+# Solve for the count of nodes
+# First get the full perimeter at 10 point per bezier segment
+# Group edges by angle.
+# Within each group, consecutive edges with non-negative scale
+# are treated as a unit.
+# af is an asymmetry factor.
+# It starts at 0.  We go through the grouped edges, count up
+# the number of nodes, and see if opposite edges agree.  If they
+# don't agree, af is adjusted.
+
+self=qg
 
 
+def he_angle(he):
+    # return (he.grid.edges['angle'][he.j] + 180*he.orient)%360.0
+    # Since this is being used after the internal edges handling,
+    # angles are oriented to the cycle of the cell, not the natural
+    # edge orientation.
+    return he.grid.edges['angle'][he.j]
+
+# Start at a corner
+he=self.gen.cell_to_halfedge(0,0)
+while 1:
+    he_fwd=he.fwd()
+    corner= he_angle(he) != he_angle(he_fwd)
+    he=he_fwd
+    if corner:
+        break
+
+he0=he
+idx=0 # current location into list of perimeter samples
+perimeter=[]
+node_to_idx={}
+angle_to_segments={0:[],
+                   90:[],
+                   180:[],
+                   270:[]}
+
+last_fixed_node=he.node_rev()
+
+while 1:
+    pnts=self.gen_bezier_linestring(he.j,span_fixed=False)
+    if he.orient:
+        pnts=pnts[::-1]
+    perimeter.append(pnts[:-1])
+    node_to_idx[he.node_rev()]=idx
+    idx+=len(pnts)-1
+    he_fwd=he.fwd()
+    angle=he_angle(he)
+    angle_fwd=he_angle(he_fwd)
+    if  ( (angle!=angle_fwd) # a corner
+          or (self.gen.edges['scale'][he.j]<0)
+          or (self.gen.edges['scale'][he_fwd.j]<0) ):
+        if self.gen.edges['scale'][he.j]<0:
+            count=-int( self.gen.edges['scale'][he.j] )
+        else:
+            count=0
+        angle_to_segments[angle].append( [last_fixed_node,he.node_fwd(),count] )
+        last_fixed_node=he.node_fwd()
+    
+    he=he_fwd
+    if he==he0:
+        break
+perimeter=np.concatenate(perimeter)
+
+
+plt.cla()
+self.gen.plot_edges()
+plt.plot(perimeter[:,0],perimeter[:,1],'g-')
+plt.axis('tight')
+plt.axis('equal')
+
+for n in node_to_idx:
+    idx=node_to_idx[n]
+    plt.plot( [perimeter[idx,0]],
+              [perimeter[idx,1]],
+              'ro')
+
+self.gen.plot_nodes(labeler='id')
+self.gen.plot_edges(labeler='angle')
+
+def discretize_string(string,density):
+    """
+    string: a node string with counts, 
+       [ (start node, end node, count), ... ]
+       where a count of 0 means use the provided density
+    density: a density (scale) field
+    returns: (N,2) discretized linestring and (N,) bool array of
+     rigid-ness.
+    """
+    result=[]
+    rigids=[]
+    
+    for a,b,count in string:
+        if count==0:
+            idx_a=node_to_idx[a]
+            idx_b=node_to_idx[b]
+            if idx_a<idx_b:
+                pnts=perimeter[idx_a:idx_b+1]
+            else:
+                pnts=np.concatenate( [perimeter[idx_a:],
+                                      perimeter[:idx_b+1]] )
+            assert len(pnts)>0
+            seg=linestring_utils.resample_linearring(pnts,density,closed_ring=0)
+            rigid=np.zeros(len(seg),np.bool8)
+            rigid[0]=rigid[-1]=True
+        else:
+            pnt_a=self.gen.nodes['x'][a]
+            pnt_b=self.gen.nodes['x'][b]
+            seg=np.c_[ np.linspace(pnt_a[0], pnt_b[0], count+1),
+                       np.linspace(pnt_a[1], pnt_b[1], count+1) ]
+            rigid=np.ones(len(seg),np.bool8)
+        result.append(seg[:-1])
+        rigids.append(rigid[:-1])
+    result.append( seg[-1:] )
+    rigids.append( rigid[-1:] )
+    result=np.concatenate(result)
+    rigids=np.concatenate(rigids)
+    return result,rigids
+
+def calculate_coord_count(left,right,density):
+    # 0,180:
+    # positive af makes c1 larger
+    af_low=-5
+    af_high=5
+    while 1:
+        af=(af_low+af_high)/2
+        assert abs(af)<4.9
+        pnts0,rigid0=discretize_string(left,(2**af)*density)
+        pnts1,rigid1=discretize_string(right,(0.5**af)*density)
+        c0=len(pnts0)
+        c1=len(pnts1)
+        if c0==c1:
+            break
+        if c0>c1: #  af should be larger
+            af_low=af
+            continue
+        if c0<c1:
+            af_high=af
+            continue
+    return (pnts0,rigid0),(pnts1[::-1],rigid1[::-1])
+
+(left_i,left_i_rigid),(right_i,right_i_rigid)=calculate_coord_count(angle_to_segments[0],
+                                                                    angle_to_segments[180],
+                                                                    qg.scales[0])
+(left_j,left_j_rigid),(right_j,right_j_rigid)=calculate_coord_count(angle_to_segments[90],
+                                                                    angle_to_segments[270],
+                                                                    qg.scales[1])
+
+# Necessary to have order match grid order below
+left_i=left_i[::-1]
+left_i_rigid=left_i_rigid[::-1]
+right_i=right_i[::-1]
+right_i_rigid=right_i_rigid[::-1]
+
+# option 3: new patch code. Deterministically place the boundary nodes, find their
+#  psi/phi coords, and linearly interpolate in psi/phi space.  I think this is the 
+#  way to go.  We get nicely behaved curves in the interior and boundary.  Should
+#  avoid any self-intersections.  And most of it is quite fast. Slow step is mapping
+#  back from psi/phi to x/y, though in this simplified domain, that can be done quickly
+#  by going back to how I did it in the past.
+
+for s,r in [ (left_i,left_i_rigid),
+             (right_i,right_i_rigid),
+             (left_j,left_j_rigid),
+             (right_j,right_j_rigid) ]:
+    plt.plot( s[~r,0], s[~r,1], 'mo')
+    plt.plot( s[r,0], s[r,1], 'ko')
+    
+# good.
+
+##
+patch=unstructured_grid.UnstructuredGrid(max_sides=4,
+                                         extra_node_fields=[('rigid',np.bool8)],
+                                         extra_edge_fields=[('orient',np.float32)])
+elts=patch.add_rectilinear( [0,0],
+                            [len(left_i)-1, len(left_j)-1],
+                            len(left_i), len(left_j) )
+# Fill in orientation
+segs=patch.nodes['x'][ patch.edges['nodes'] ]
+deltas=segs[:,1,:] - segs[:,0,:]
+
+patch.edges['orient'][deltas[:,0]==0]=90 # should be consistent with gen.edges['angle']
+patch.edges['orient'][deltas[:,1]==0]=0
 
 ## 
-grids.append(g_final)
-# except:
-#     print()
-#     print("--------------------FAIL--------------------")
-#     print()
-#     continue
+
+
+# Fill in nodes['x'] with psi/phi coordinates
+#  look up psi/phi for all boundary nodes.
+#  for opposite nodes not on a boundary, linearly interpolate
+#  between their psi/phi values.
+#  intersect i and j lines in psi/phi space.
+
+mp_tri=self.g_int.mpl_triangulation()
+psi_field=field.XYZField(X=self.g_int.nodes['x'],F=self.psi)
+psi_field._tri = mp_tri
+phi_field=field.XYZField(X=self.g_int.nodes['x'],F=self.phi)
+phi_field._tri = mp_tri
+
+# Now that we operate on smaller areas, the mapping is 1:1
+# Am I going to run into out-of-domain problems?
+# so far no nan, but there are some places wher it seems
+# that it has left the domain and is getting some wacky results.
+# could force the known coordinates
+# Depending on what sort of relaxing I do, this may not matter.
+left_i_pp =np.c_[ psi_field(left_i), phi_field(left_i)]
+right_i_pp=np.c_[ psi_field(right_i), phi_field(right_i)]
+left_j_pp =np.c_[ psi_field(left_j), phi_field(left_j)]
+right_j_pp=np.c_[ psi_field(right_j), phi_field(right_j)]
+
+if 1: # Slip in the contour values from below for some testing
+    left_i_pp[:,0]=-1
+    right_i_pp[:,0]=1
+    left_i_pp[:,1]=right_i_pp[:,1]=i_contours[::-1]
+    left_j_pp[:,1]=1
+    right_j_pp[:,1]=-1
+    left_j_pp[:,0]=right_j_pp[:,0]=j_contours
+
+assert np.all( np.isfinite(left_i_pp) )
+assert np.all( np.isfinite(right_i_pp) )
+assert np.all( np.isfinite(left_j_pp) )
+assert np.all( np.isfinite(right_j_pp) )
+
+for i in range(len(left_i)):
+    for j in range(len(left_j)):
+        n=elts['nodes'][i,j]
+
+        if i==0:
+            x=left_j[j]
+            rigid=left_j_rigid[j]
+        elif i+1==len(left_i):
+            x=right_j[j]
+            rigid=right_j_rigid[j]
+        elif j==0:
+            x=left_i[i]
+            rigid=left_i_rigid[i]
+        elif j+1==len(left_j):
+            x=right_i[i]
+            rigid=right_i_rigid[i]
+        else:
+            seg_i= [ left_i_pp[i], right_i_pp[i] ]
+            seg_j= [ left_j_pp[j], right_j_pp[j] ]
+            pp,alphas=utils.segment_segment_intersection(seg_i,seg_j)
+            x=self.g_int.fields_to_xy(pp,[self.psi,self.phi],x)
+            rigid=False
+
+        patch.nodes['x'][n]=x
+        patch.nodes['rigid'][n]=rigid
+
+##
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+fig.subplots_adjust(left=0,right=1,bottom=0.01,top=1)
+
+
+segs=patch.nodes['x'][ patch.edges['nodes'] ]
+valid=np.all(np.isfinite(segs), axis=1 )[:,0]
+patch.plot_nodes(mask=patch.nodes['rigid'],color='k',sizes=30)
+patch.plot_edges(mask=valid)
 
 ##
 
-plt.figure(2).clf()
-fig,ax=plt.subplots(num=2)
-# qg.g_not_final.plot_edges(ax=ax) # DT
-qg.g_final2.plot_edges(ax=ax) # patches
-qg.gen.plot_edges(labeler='scale',mask=qg.gen.edges['scale']>0,lw=0.5,color='k')
+# HERE: try some relaxation approaches.
+#   First, pin the known fixed nodes, and don't worry about
+#   trying to keep everybody on the bezier boundary.
 
-# Swaths may be smaller than an edge in gen. So gen might say put 5 edges here,
-# but then the swath won't necessarily line up with that.
-# A: set spacing of nodes at the gen level
-# B: convert everything to resolution.
+# rigid-ness is carried through from the discretized nodestrings,
+# with nodes with negative scale and corner nodes set as rigid
 
-# When gridding 
+from stompy.grid import orthogonalize
+tweaker=orthogonalize.Tweaker(patch)
 
+# First, just nudge everybody towards orthogonal:
+# BAD.  Too far out of orthogonal.
+for n in patch.valid_node_iter():
+    if patch.nodes['rigid'][n]: continue
+    tweaker.nudge_node_orthogonal(n)
 
-##     
-comb=unstructured_grid.UnstructuredGrid(max_sides=4)
+plt.figure(1)
+plt.cla()
+patch.plot_nodes(mask=patch.nodes['rigid'],color='r',sizes=30)
+patch.plot_edges()
+plt.axis( (552066.9646997608, 552207.1805374735, 4124548.347825134, 4124660.504092434) )
 
-for g in grids:
-    comb.add_grid(g)
+## 
+from stompy.grid import orthogonalize
+tweaker=orthogonalize.Tweaker(patch)
 
-comb.write_ugrid('combined-20201026a.nc',overwrite=True)
+n_free=np.nonzero(~patch.nodes['rigid'])[0]
+edge_scales=np.zeros(patch.Nedges(),np.float64)
+ec=patch.edges_center()
 
-# HERE:
-#   Start adjusting resolutions, still on the separate grids.
-#   Make a QGIS interface, so I can select one or more cells, generate
-#   a grid.
-
-
-
-##     
-plt.clf()
-#ccoll=g_final.plot_edges(color='orange',lw=0.4)
-ccoll=g.plot_edges(color='k',lw=0.4)
-plt.axis( (552047.9351268414, 552230.9809219765, 4124547.643451654, 4124703.282891116) )
+for orient,scale in zip( [0,90], qg.scales):
+    sel=patch.edges['orient']==orient
+    edge_scales[sel] = scale(ec[sel])
 
 ##
 
-# Generate all cells indepedently
+# This produces okay results, but it's going to be super slow
+# to converge.
+tweaker.smooth_to_scale( n_free, edge_scales,
+                         smooth_iters=10,nudge_iters=2)
+    
+plt.figure(1)
+plt.cla()
+patch.plot_nodes(mask=patch.nodes['rigid'],color='r',sizes=30)
+patch.plot_edges()
+plt.axis( (552066.9646997608, 552207.1805374735, 4124548.347825134, 4124660.504092434) )
 
+##
+
+# Status:
+# have a topologically good grid
+# know which nodes are fixed, which can be moved.
+# there is still a fundamental tradeoff: I want to forget "rigid-ness"
+# over some length scale
+# If I did have some target psi/phi contours, then I could smoothly
+# move from locally rigid psi/phi values to the target values.
+# I can probably re-use some of the patch code to get target psi/phi
+# contours.
+
+def patch_contours(g_int,node_field,scale,count=None):
+    """
+    Given g_int, a node field (psi/phi) defined on g_int, a scale field, and 
+    a count of edges, return the contour values of the node field which
+    would best approximate the requested scale.
+    
+    g_int: UnstructuredGrid
+    node_field: a psi or phi field defined on the nodes of g_int
+    scale: length scale Field with domain include g_int
+    count: if specified, the number of nodes in the resulting discretization
+
+    returns the contour values (one more than the number of edges)
+    """
+    field_min=node_field.min()
+    field_max=node_field.max()
+
+    # original swath code had to pull out a subset of node in the node
+    # field, but now we can assume that g_int is congruent to the target
+    # patch.
+    swath_nodes=np.arange(g_int.Nnodes())
+    swath_vals=node_field[swath_nodes]
+
+    # preprocessing for contour placement
+    nd=quads.NodeDiscretization(g_int)
+    Mdx,Bdx=nd.construct_matrix(op='dx') # could be saved between calls.
+    Mdy,Bdy=nd.construct_matrix(op='dy') # 
+    field_dx=Mdx.dot(node_field)
+    field_dy=Mdy.dot(node_field)
+    field_grad=np.sqrt( field_dx**2 + field_dy**2 )
+    swath_grad=field_grad
+
+    order=np.argsort(swath_vals)
+    o_vals=swath_vals[order]
+    o_dval_ds=swath_grad[order]
+    o_ds_dval=1./o_dval_ds
+
+    # trapezoid rule integration
+    d_vals=np.diff(o_vals)
+    # Particularly near the ends there are a lot of
+    # duplicate swath_vals.
+    # Try a bit of lowpass to even things out.
+    if 1:
+        winsize=int(len(o_vals)/5)
+        if winsize>1:
+            o_ds_dval=filters.lowpass_fir(o_ds_dval,winsize)
+
+    s=np.cumsum(d_vals*0.5*(o_ds_dval[:-1]+o_ds_dval[1:]))
+    s=np.r_[0,s]
+
+    # calculate this from resolution
+    # might have i/j swapped.  range of s is 77m, and field
+    # is 1. to 1.08.  better now..
+    local_scale=scale( g_int.nodes['x'][swath_nodes] ).mean(axis=0)
+    if count is None:
+        n_swath_cells=int(np.round( (s.max() - s.min())/local_scale))
+        n_swath_cells=max(1,n_swath_cells)
+    else:
+        n_swath_cells=count-1
+
+    s_contours=np.linspace(s[0],s[-1],1+n_swath_cells)
+    adj_contours=np.interp( s_contours,
+                            s,o_vals)
+    
+    adj_contours[0]=field_min
+    adj_contours[-1]=field_max
+
+    assert np.all(np.diff(adj_contours)>0),"should be monotonic, right?"
+
+    return adj_contours
+
+i_contours=patch_contours(qg.g_int,qg.phi,qg.scales[0], len(left_i))
+qg.g_int.contour_node_values(qg.phi,i_contours,colors='orange')
+j_contours=patch_contours(qg.g_int,qg.psi,qg.scales[1], len(left_j))
+qg.g_int.contour_node_values(qg.psi,j_contours,colors='red')
