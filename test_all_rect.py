@@ -211,7 +211,6 @@ qg.calc_psi_phi()
 
 self=qg
 
-
 def he_angle(he):
     # return (he.grid.edges['angle'][he.j] + 180*he.orient)%360.0
     # Since this is being used after the internal edges handling,
@@ -370,157 +369,6 @@ for s,r in [ (left_i,left_i_rigid),
     
 # good.
 
-##
-patch=unstructured_grid.UnstructuredGrid(max_sides=4,
-                                         extra_node_fields=[('rigid',np.bool8)],
-                                         extra_edge_fields=[('orient',np.float32)])
-elts=patch.add_rectilinear( [0,0],
-                            [len(left_i)-1, len(left_j)-1],
-                            len(left_i), len(left_j) )
-# Fill in orientation
-segs=patch.nodes['x'][ patch.edges['nodes'] ]
-deltas=segs[:,1,:] - segs[:,0,:]
-
-patch.edges['orient'][deltas[:,0]==0]=90 # should be consistent with gen.edges['angle']
-patch.edges['orient'][deltas[:,1]==0]=0
-
-## 
-
-
-# Fill in nodes['x'] with psi/phi coordinates
-#  look up psi/phi for all boundary nodes.
-#  for opposite nodes not on a boundary, linearly interpolate
-#  between their psi/phi values.
-#  intersect i and j lines in psi/phi space.
-
-mp_tri=self.g_int.mpl_triangulation()
-psi_field=field.XYZField(X=self.g_int.nodes['x'],F=self.psi)
-psi_field._tri = mp_tri
-phi_field=field.XYZField(X=self.g_int.nodes['x'],F=self.phi)
-phi_field._tri = mp_tri
-
-# Now that we operate on smaller areas, the mapping is 1:1
-# Am I going to run into out-of-domain problems?
-# so far no nan, but there are some places wher it seems
-# that it has left the domain and is getting some wacky results.
-# could force the known coordinates
-# Depending on what sort of relaxing I do, this may not matter.
-left_i_pp =np.c_[ psi_field(left_i), phi_field(left_i)]
-right_i_pp=np.c_[ psi_field(right_i), phi_field(right_i)]
-left_j_pp =np.c_[ psi_field(left_j), phi_field(left_j)]
-right_j_pp=np.c_[ psi_field(right_j), phi_field(right_j)]
-
-if 1: # Slip in the contour values from below for some testing
-    left_i_pp[:,0]=-1
-    right_i_pp[:,0]=1
-    left_i_pp[:,1]=right_i_pp[:,1]=i_contours[::-1]
-    left_j_pp[:,1]=1
-    right_j_pp[:,1]=-1
-    left_j_pp[:,0]=right_j_pp[:,0]=j_contours
-
-assert np.all( np.isfinite(left_i_pp) )
-assert np.all( np.isfinite(right_i_pp) )
-assert np.all( np.isfinite(left_j_pp) )
-assert np.all( np.isfinite(right_j_pp) )
-
-for i in range(len(left_i)):
-    for j in range(len(left_j)):
-        n=elts['nodes'][i,j]
-
-        if i==0:
-            x=left_j[j]
-            rigid=left_j_rigid[j]
-        elif i+1==len(left_i):
-            x=right_j[j]
-            rigid=right_j_rigid[j]
-        elif j==0:
-            x=left_i[i]
-            rigid=left_i_rigid[i]
-        elif j+1==len(left_j):
-            x=right_i[i]
-            rigid=right_i_rigid[i]
-        else:
-            seg_i= [ left_i_pp[i], right_i_pp[i] ]
-            seg_j= [ left_j_pp[j], right_j_pp[j] ]
-            pp,alphas=utils.segment_segment_intersection(seg_i,seg_j)
-            x=self.g_int.fields_to_xy(pp,[self.psi,self.phi],x)
-            rigid=False
-
-        patch.nodes['x'][n]=x
-        patch.nodes['rigid'][n]=rigid
-
-##
-plt.figure(1).clf()
-fig,ax=plt.subplots(num=1)
-fig.subplots_adjust(left=0,right=1,bottom=0.01,top=1)
-
-
-segs=patch.nodes['x'][ patch.edges['nodes'] ]
-valid=np.all(np.isfinite(segs), axis=1 )[:,0]
-patch.plot_nodes(mask=patch.nodes['rigid'],color='k',sizes=30)
-patch.plot_edges(mask=valid)
-
-##
-
-# HERE: try some relaxation approaches.
-#   First, pin the known fixed nodes, and don't worry about
-#   trying to keep everybody on the bezier boundary.
-
-# rigid-ness is carried through from the discretized nodestrings,
-# with nodes with negative scale and corner nodes set as rigid
-
-from stompy.grid import orthogonalize
-tweaker=orthogonalize.Tweaker(patch)
-
-# First, just nudge everybody towards orthogonal:
-# BAD.  Too far out of orthogonal.
-for n in patch.valid_node_iter():
-    if patch.nodes['rigid'][n]: continue
-    tweaker.nudge_node_orthogonal(n)
-
-plt.figure(1)
-plt.cla()
-patch.plot_nodes(mask=patch.nodes['rigid'],color='r',sizes=30)
-patch.plot_edges()
-plt.axis( (552066.9646997608, 552207.1805374735, 4124548.347825134, 4124660.504092434) )
-
-## 
-from stompy.grid import orthogonalize
-tweaker=orthogonalize.Tweaker(patch)
-
-n_free=np.nonzero(~patch.nodes['rigid'])[0]
-edge_scales=np.zeros(patch.Nedges(),np.float64)
-ec=patch.edges_center()
-
-for orient,scale in zip( [0,90], qg.scales):
-    sel=patch.edges['orient']==orient
-    edge_scales[sel] = scale(ec[sel])
-
-##
-
-# This produces okay results, but it's going to be super slow
-# to converge.
-tweaker.smooth_to_scale( n_free, edge_scales,
-                         smooth_iters=10,nudge_iters=2)
-    
-plt.figure(1)
-plt.cla()
-patch.plot_nodes(mask=patch.nodes['rigid'],color='r',sizes=30)
-patch.plot_edges()
-plt.axis( (552066.9646997608, 552207.1805374735, 4124548.347825134, 4124660.504092434) )
-
-##
-
-# Status:
-# have a topologically good grid
-# know which nodes are fixed, which can be moved.
-# there is still a fundamental tradeoff: I want to forget "rigid-ness"
-# over some length scale
-# If I did have some target psi/phi contours, then I could smoothly
-# move from locally rigid psi/phi values to the target values.
-# I can probably re-use some of the patch code to get target psi/phi
-# contours.
-
 def patch_contours(g_int,node_field,scale,count=None):
     """
     Given g_int, a node field (psi/phi) defined on g_int, a scale field, and 
@@ -591,7 +439,236 @@ def patch_contours(g_int,node_field,scale,count=None):
 
     return adj_contours
 
+
 i_contours=patch_contours(qg.g_int,qg.phi,qg.scales[0], len(left_i))
 qg.g_int.contour_node_values(qg.phi,i_contours,colors='orange')
 j_contours=patch_contours(qg.g_int,qg.psi,qg.scales[1], len(left_j))
 qg.g_int.contour_node_values(qg.psi,j_contours,colors='red')
+
+# Now I have the target psi/phi contours
+# I know which nodes should be rigid, and their locations.
+
+patch=unstructured_grid.UnstructuredGrid(max_sides=4,
+                                         extra_node_fields=[('rigid',np.bool8),
+                                                            ('pp',np.float64,2)],
+                                         extra_edge_fields=[('orient',np.float32)])
+elts=patch.add_rectilinear( [0,0],
+                            [len(left_i)-1, len(left_j)-1],
+                            len(left_i), len(left_j) )
+# Fill in orientation
+segs=patch.nodes['x'][ patch.edges['nodes'] ]
+deltas=segs[:,1,:] - segs[:,0,:]
+
+patch.edges['orient'][deltas[:,0]==0]=90 # should be consistent with gen.edges['angle']
+patch.edges['orient'][deltas[:,1]==0]=0
+
+## 
+
+# Mappings from X=>PP
+# This gets a little rough.  Queries on the border of mp_tri
+# return twitchy values.
+# the trifinder does return -1 in these cases.  So what does
+# LinearTriInterpolator do in that case?
+
+from matplotlib.tri import LinearTriInterpolator,TriFinder,TrapezoidMapTriFinder
+class PermissiveFinder(TrapezoidMapTriFinder):
+    def __init__(self,grid):
+        self.grid=grid
+        mp_tri=grid.mpl_triangulation()
+        super(PermissiveFinder,self).__init__(mp_tri)
+    def __call__(self, x, y):
+        base=super(PermissiveFinder,self).__call__(x,y)
+        missing=np.nonzero(base==-1)[0]
+        for i in missing:
+            base[i]=qg.g_int.select_cells_nearest( [x[i],y[i]] )
+        return base
+        
+finder=PermissiveFinder(qg.g_int)
+psi_interp=LinearTriInterpolator(mp_tri,self.psi,finder)
+phi_interp=LinearTriInterpolator(mp_tri,self.phi,finder)
+psi_field=lambda x: psi_interp(x[...,0],x[...,1]).filled(np.nan)
+phi_field=lambda x: phi_interp(x[...,0],x[...,1]).filled(np.nan)
+
+# psi_field=field.XYZField(X=self.g_int.nodes['x'],F=self.psi)
+# psi_field._tri = mp_tri
+# phi_field=field.XYZField(X=self.g_int.nodes['x'],F=self.phi)
+# phi_field._tri = mp_tri
+
+## 
+
+#  look up psi/phi for all boundary nodes.
+
+# Now that we operate on smaller areas, the mapping is 1:1
+# Am I going to run into out-of-domain problems?
+# so far no nan, but there are some places wher it seems
+# that it has left the domain and is getting some wacky results.
+# could force the known coordinates
+# Depending on what sort of relaxing I do, this may not matter.
+
+# left_i_pp =np.c_[ psi_field(left_i), phi_field(left_i)]
+# right_i_pp=np.c_[ psi_field(right_i), phi_field(right_i)]
+# left_j_pp =np.c_[ psi_field(left_j), phi_field(left_j)]
+# right_j_pp=np.c_[ psi_field(right_j), phi_field(right_j)]
+# 
+# # if 1: # Slip in the contour values from below for some testing
+# #     left_i_pp[:,0]=-1
+# #     right_i_pp[:,0]=1
+# #     left_i_pp[:,1]=right_i_pp[:,1]=i_contours[::-1]
+# #     left_j_pp[:,1]=1
+# #     right_j_pp[:,1]=-1
+# #     left_j_pp[:,0]=right_j_pp[:,0]=j_contours
+# 
+# assert np.all( np.isfinite(left_i_pp) )
+# assert np.all( np.isfinite(right_i_pp) )
+# assert np.all( np.isfinite(left_j_pp) )
+# assert np.all( np.isfinite(right_j_pp) )
+
+
+# Fill in nodes['pp'] and ['x']. Non-rigid nodes get a target pp, from which
+# we calculate x.  Rigid nodes get a prescribed x, from which we calculate pp.
+
+for i in range(len(left_i)):
+    for j in range(len(left_j)):
+        n=elts['nodes'][i,j]
+        rigid=True
+
+        if i==0 and left_j_rigid[j]:
+            x=left_j[j]
+        elif i+1==len(left_i) and right_j_rigid[j]:
+            x=right_j[j]
+        elif j==0 and left_i_rigid[i]:
+            x=left_i[i]
+        elif j+1==len(left_j) and right_i_rigid[i]:
+            x=right_i[i]
+        else:
+            rigid=False
+            pp=[j_contours[j],
+                i_contours[-i-1]] # I think I have to reverse i
+            
+            x=self.g_int.fields_to_xy(pp,[self.psi,self.phi],x)
+
+        if rigid:
+            pp=[min(1,max(-1,psi_field(x))),
+                min(1,max(-1,phi_field(x)))]
+
+        patch.nodes['x'][n]=x
+        patch.nodes['pp'][n]=pp
+        patch.nodes['rigid'][n]=rigid
+
+# Smooth out the deviations from target
+
+target_pp=np.zeros( (patch.Nnodes(),2),np.float64)
+target_pp[elts['nodes'],0]=j_contours[None,:]
+target_pp[elts['nodes'],1]=i_contours[::-1,None]
+dpp=patch.nodes['pp']-target_pp
+patch.plot_nodes(values=dpp[:,1],cmap='jet')
+
+# Simple smoothing. Can use elts['nodes'] rather than having to ask about
+# neighbors.
+dpp_r=dpp[elts['nodes']].copy()
+rigid_r=patch.nodes['rigid'][elts['nodes']]
+
+from scipy import signal
+
+for it in range(10):
+    smooth=0*dpp_r
+    win=np.array([0.5,0,0.5])
+    # Smoothing is only along the respective coordinate. I.e. phi
+    # anomalies are smoothed along contours of phi, and psi anomalies
+    # are smoothed along contours of psi.
+    smooth[...,0]=signal.fftconvolve(dpp_r[...,0],win[:,None],mode='same')
+    smooth[...,1]=signal.fftconvolve(dpp_r[...,1],win[None,:],mode='same')
+        
+    # Just update the non-rigid nodes:
+    dpp_r[~rigid_r]=smooth[~rigid_r]
+
+dpp=0*patch.nodes['pp']
+dpp[elts['nodes']] = dpp_r
+
+# Copy back to pp
+sel=~patch.nodes['rigid']
+patch.nodes['pp'][sel] = target_pp[sel] + dpp[sel]
+
+# And remap those nodes:
+for n in np.nonzero(~patch.nodes['rigid'])[0]:
+    x_orig=patch.nodes['x'][n]
+    patch.nodes['x'][n]=self.g_int.fields_to_xy(patch.nodes['pp'][n],
+                                                [self.psi,self.phi],
+                                                x_orig)
+
+plt.figure(1).clf()
+fig,ax=plt.subplots(num=1)
+fig.subplots_adjust(left=0,right=1,bottom=0.01,top=1)
+
+segs=patch.nodes['x'][ patch.edges['nodes'] ]
+valid=np.all(np.isfinite(segs), axis=1 )[:,0]
+#patch.plot_nodes(mask=patch.nodes['rigid'],color='k',sizes=30)
+
+ncoll=patch.plot_nodes(values=dpp[:,1],cmap='jet')
+patch.plot_edges(mask=valid)
+plt.colorbar(ncoll)
+
+ax.axis((552440.8693847182, 552491.4300357571, 4124240.871300229, 4124293.9328129073))
+
+##
+
+# HERE: try some relaxation approaches.
+#   First, pin the known fixed nodes, and don't worry about
+#   trying to keep everybody on the bezier boundary.
+
+# rigid-ness is carried through from the discretized nodestrings,
+# with nodes with negative scale and corner nodes set as rigid
+
+from stompy.grid import orthogonalize
+tweaker=orthogonalize.Tweaker(patch)
+
+# First, just nudge everybody towards orthogonal:
+# BAD.  Too far out of orthogonal.
+for n in patch.valid_node_iter():
+    if patch.nodes['rigid'][n]: continue
+    tweaker.nudge_node_orthogonal(n)
+
+plt.figure(1)
+plt.cla()
+patch.plot_nodes(mask=patch.nodes['rigid'],color='r',sizes=30)
+patch.plot_edges()
+#plt.axis( (552066.9646997608, 552207.1805374735, 4124548.347825134, 4124660.504092434) )
+plt.axis( (552447.0573990112, 552507.7547532236, 4124244.839335523, 4124293.3901183335) )
+
+## 
+from stompy.grid import orthogonalize
+tweaker=orthogonalize.Tweaker(patch)
+
+n_free=np.nonzero(~patch.nodes['rigid'])[0]
+edge_scales=np.zeros(patch.Nedges(),np.float64)
+ec=patch.edges_center()
+
+for orient,scale in zip( [0,90], qg.scales):
+    sel=patch.edges['orient']==orient
+    edge_scales[sel] = scale(ec[sel])
+
+##
+
+# This produces okay results, but it's going to be super slow
+# to converge.
+tweaker.smooth_to_scale( n_free, edge_scales,
+                         smooth_iters=1,nudge_iters=1)
+    
+plt.figure(1)
+plt.cla()
+patch.plot_nodes(mask=patch.nodes['rigid'],color='r',sizes=30)
+patch.plot_edges()
+plt.axis( (552066.9646997608, 552207.1805374735, 4124548.347825134, 4124660.504092434) )
+
+##
+
+# Status:
+# have a topologically good grid
+# know which nodes are fixed, which can be moved.
+# there is still a fundamental tradeoff: I want to forget "rigid-ness"
+# over some length scale
+# If I did have some target psi/phi contours, then I could smoothly
+# move from locally rigid psi/phi values to the target values.
+# I can probably re-use some of the patch code to get target psi/phi
+# contours.
+
