@@ -49,46 +49,8 @@ if 1:
 #  In each cell, iterate over half-edges, filling in angles as we go.
 #  Slightly less naive: if each cell is a simple quad, then just choose the
 #    four smallest angles for the corners, everybody else is straight.
-def snap_angles(gen):
-    def he_angle(he):
-        # Calculate absolute angle of the half edge
-        xy=he.grid.nodes['x']
-        seg=xy[ [he.node_rev(), he.node_fwd()] ]
-        dxy=seg[1] - seg[0]
-        return np.arctan2(dxy[1],dxy[0])
-    def set_angle(he,angle):
-        # set turn_fwd/rev for the half edge
-        if he.orient==0:
-            gen.edges['turn_fwd'][he.j]=angle
-        else:
-            gen.edges['turn_rev'][he.j]=angle
-        
-    
-    for c in gen.valid_cell_iter():
-        angle_and_he=[]
-        he0=he=gen.cell_to_halfedge(c,0)
-        while 1:
-            he_nxt=he.fwd()
 
-            angle0=he_angle(he)
-            angle1=he_angle(he_nxt)
-            turn=(angle1-angle0)*180/np.pi
-            turn_d=(turn + 180) % 360 - 180
-            # Now turn is 0 for straight ahead, 90 for a left
-            angle=180-turn_d
-            angle_and_he.append( [angle,he] )
-            if he_nxt==he0:
-                break
-            else:
-                he=he_nxt
-                
-        order=np.argsort( [angle for angle,he in angle_and_he] )
-        for idx in order[:4]:
-            set_angle(angle_and_he[idx][1],90)
-        for idx in order[4:]:
-            set_angle(angle_and_he[idx][1],180)
-
-snap_angles(gen_src)
+# snap_angles(gen_src)
 quads.prepare_angles_halfedge(gen_src)
 
 gen_src.plot_edges(mask=np.isfinite(gen_src.edges['angle']),
