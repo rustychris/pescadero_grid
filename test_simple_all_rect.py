@@ -34,8 +34,12 @@ gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v15.pkl')
 
 ## 
 
-sqg=quads.SimpleQuadGen(gen_src,cells=list(gen_src.valid_cell_iter()))
+sqg=quads.SimpleQuadGen(gen_src,cells=list(gen_src.valid_cell_iter()),
+                        execute=False)
 sqg.execute()
+
+## 
+g=sqg.g_final
 
 ## 
 g=unstructured_grid.UnstructuredGrid(max_sides=4)
@@ -98,38 +102,72 @@ for nB in n_to_match:
 
 g.add_grid(gen_src_tri,merge_nodes=merge_nodes)
 
-##
-
-g.renumber()
+g.renumber(reorient_edges=False)
 
 g_orig=g
 
-##
-
 g_orig.write_pickle('ready_for_triangles.pkl',overwrite=True)
 
-##
+## 
 g=unstructured_grid.UnstructuredGrid.read_pickle('ready_for_triangles.pkl')
 g.cells['_area']=np.nan
 g.orient_cells()
 
-##
-
 # Fill some holes!
-x_north_pond=[552498., 4125123.]
 
 from stompy.grid import triangulate_hole
+g_new=g
+x_north_pond=[552498., 4125123.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_north_pond,method='gmsh')
 
-g_new=triangulate_hole.triangulate_hole(g,seed_point=x_north_pond,method='gmsh',
+x_lagoon_shallow=[552384., 4124450.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_lagoon_shallow,method='gmsh')
+
+x_north_marsh=[552841., 4124582.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_north_marsh,method='gmsh')
+
+x_butano_lagoon=[552516., 4124182.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_lagoon,method='gmsh')
+
+x_butano_marsh_w=[552607., 4123680.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_marsh_w,method='gmsh')
+
+# Is round hill intact at this point? yes.
+
+x_butano_marsh_s=[552905., 4123225.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_marsh_s,method='gmsh')
+
+# Is round hill intact at this point? yes
+g_new.write_pickle('prebug.pkl',overwrite=True)
+
+## 
+# Hmm - I'm losing part of round hill.
+# Something about the splice is taking out remaining cell-less edges adjacent
+# to degree>2 nodes.
+# 
+
+six.moves.reload_module(triangulate_hole)
+
+g_new=unstructured_grid.UnstructuredGrid.read_pickle('prebug.pkl')
+
+x_delta_marsh=[552771., 4124233.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_delta_marsh,method='gmsh',
                                         splice=True)
 
 ##
-
 plt.figure(1).clf()
-g.plot_edges(color='tab:blue',lw=3,alpha=0.5)
-#g_new.plot_edges(color='tab:red')
+g_new.plot_edges(color='tab:blue',lw=1)
+
+#g_delta.plot_edges(color='tab:red',lw=3,alpha=0.3)
+gen_src.plot_edges(color='0.7',lw=0.5)
+
 
 ##
+
+
+x_delta_marsh_s=[552844., 4123945.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_delta_marsh_s,method='gmsh',
+                                        max_nodes=g_new.Nnodes())
 
 
 ##
