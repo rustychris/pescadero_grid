@@ -30,12 +30,12 @@ six.moves.reload_module(quads)
 
 # 13 is good.
 # 14 is playing with non-90 angles
-gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v15.pkl')
+gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v16.pkl')
 
 ## 
 
 sqg=quads.SimpleQuadGen(gen_src,cells=list(gen_src.valid_cell_iter()),
-                        execute=False)
+                        nom_res=2.5,execute=False)
 sqg.execute()
 
 ## 
@@ -132,63 +132,46 @@ g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_lagoon,method=
 x_butano_marsh_w=[552607., 4123680.]
 g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_marsh_w,method='gmsh')
 
-# Is round hill intact at this point? yes.
-
 x_butano_marsh_s=[552905., 4123225.]
 g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_marsh_s,method='gmsh')
 
-# Is round hill intact at this point? yes
 g_new.write_pickle('prebug.pkl',overwrite=True)
-
-## 
-# Hmm - I'm losing part of round hill.
-# Something about the splice is taking out remaining cell-less edges adjacent
-# to degree>2 nodes.
-# 
-
-six.moves.reload_module(triangulate_hole)
-
+##
+six.moves.reload_module(unstructured_grid)
 g_new=unstructured_grid.UnstructuredGrid.read_pickle('prebug.pkl')
 
+## 
+# This has another issue: there is a 'hint' edge. So far I've focused on hint
+# nodes, but if there is an edge with no cells but joining two nodes that do
+# have cells, it is getting left in the grid, and causes problems.
+six.moves.reload_module(triangulate_hole)
 x_delta_marsh=[552771., 4124233.]
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_delta_marsh,method='gmsh',
-                                        splice=True)
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_delta_marsh,method='gmsh')
 
-##
-plt.figure(1).clf()
-g_new.plot_edges(color='tab:blue',lw=1)
-
-#g_delta.plot_edges(color='tab:red',lw=3,alpha=0.3)
-gen_src.plot_edges(color='0.7',lw=0.5)
-
-
-##
-
-
+## 
 x_delta_marsh_s=[552844., 4123945.]
+
 g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_delta_marsh_s,method='gmsh',
                                         max_nodes=g_new.Nnodes())
 
+##
+
+x_pesc_roundhill=[553257., 4123782.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_pesc_roundhill,method='gmsh')
 
 ##
+
+x_butano_se=[553560., 4123089.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_se,method='gmsh')
+
+## 
 plt.figure(1).clf()
-g.plot_edges(color='k',lw=0.5)
-plt.axis('tight')
-plt.axis('equal')
-
-##
-plt.figure(1).clf()
-colors=plt.rcParams['axes.prop_cycle']
-for g,col in zip(sqg.grids,colors()):
-    g.plot_edges(**col)
-
+g_new.plot_edges(color='tab:blue',lw=1)
 plt.axis('tight')
 plt.axis('equal')
 
 ##
 
-plt.figure(2).clf()
-gen_src.plot_cells(labeler='id',centroid=True)
-plt.axis('tight')
-plt.axis('equal')
+g_new.renumber()
+g_new.write_ugrid('quad_tri_15.nc',overwrite=True)
 
