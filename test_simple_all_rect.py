@@ -32,35 +32,56 @@ six.moves.reload_module(quads)
 # 14 is playing with non-90 angles
 gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v16.pkl')
 
-## 
+##
+plt.figure(10).clf()
+gen_src.plot_cells(labeler='id',centroid=True)
+plt.axis('tight')
+plt.axis('equal')
 
+##
+six.moves.reload_module(quads)
+
+results=[]
+for lowpass in [True,False]:
+    quads.SimpleSingleQuadGen.lowpass_ds_dval=lowpass
+    sqg=quads.SimpleQuadGen(gen_src,cells=[53],
+                            nom_res=2.5,execute=False)
+    sqg.execute()
+    results.append(sqg.g_final)
+
+##
+
+plt.figure(2).clf()
+fig,axs=plt.subplots(2,1,num=2)
+results[0].plot_edges(color='tab:blue',ax=axs[0])
+results[1].plot_edges(color='tab:blue',ax=axs[1])
+for ax in axs:
+    ax.axis('tight')
+    ax.axis('equal')
+
+## 
+# lowpass or no doesn't make a difference.
+
+scale=sqg.qgs[0].scales[1]
+g_int=sqg.qgs[0].g_int
+g_int_scale=scale( g_int.nodes['x'])
+
+scat=g_int.contourf_node_values(g_int_scale,20,cmap='jet')
+plt.colorbar(scat)
+
+##
 sqg=quads.SimpleQuadGen(gen_src,cells=list(gen_src.valid_cell_iter()),
                         nom_res=2.5,execute=False)
 sqg.execute()
 
 ## 
 g=sqg.g_final
-
-## 
-g=unstructured_grid.UnstructuredGrid(max_sides=4)
-for sub_g in sqg.grids:
-    g.add_grid(sub_g,merge_nodes='auto',tol=0.01)
-
-# Maybe an issue with some nodes not getting merged. In particular,
-# there is a pair of nodes in the crook of the north pond split.
 g.renumber()
 
-if 0:
-    plt.figure(1).clf()
-    g.plot_edges(lw=0.7,color='tab:blue')
+g.write_pickle('all-quads-v16.pkl',overwrite=True)
 
-    plt.axis('tight')
-    plt.axis('equal')
-
-    zoom=(552354.2071988618, 552371.1522911632, 4124869.5447136736, 4124899.120904969)
-
-    # This puts 9354 at the crook.
-    g.plot_nodes(clip=zoom,labeler='id')
+## 
+g=unstructured_grid.UnstructuredGrid.read_pickle('all-quads-v16.pkl')
 
 # Add the non-cell edges of gen_src back into g:
 gen_src_tri=gen_src.copy()
@@ -89,11 +110,6 @@ for j in np.nonzero(j_to_delete)[0]:
 
 gen_src_tri.delete_orphan_nodes()
 
-if 0:
-    gen_src_tri.plot_edges(color='k',lw=0.5)
-    gen_src_tri.plot_nodes(color='r') 
-    gen_src_tri.plot_nodes(mask=n_to_match,color='r')
-
 merge_nodes=[]
 for nB in n_to_match:
     # Might want to limit this to boundary nodes...
@@ -106,72 +122,117 @@ g.renumber(reorient_edges=False)
 
 g_orig=g
 
-g_orig.write_pickle('ready_for_triangles.pkl',overwrite=True)
+g_orig.write_pickle('quads_and_lines-v16.pkl',overwrite=True)
+##
 
-## 
-g=unstructured_grid.UnstructuredGrid.read_pickle('ready_for_triangles.pkl')
-g.cells['_area']=np.nan
-g.orient_cells()
+plt.figure(1).clf()
+g_orig.plot_edges(lw=0.5,color='k')
+
+##
+
+g=unstructured_grid.UnstructuredGrid.read_pickle('quads_and_lines-v16.pkl')
 
 # Fill some holes!
-
+#th_kwargs=dict(method='gmsh')
+th_kwargs=dict(method='front',method_kwargs=dict(reject_cc_outside_cell=False))
+##
+               
 from stompy.grid import triangulate_hole
 g_new=g
 x_north_pond=[552498., 4125123.]
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_north_pond,method='gmsh')
-
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_north_pond,**th_kwargs)
+# front okay so far.
 x_lagoon_shallow=[552384., 4124450.]
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_lagoon_shallow,method='gmsh')
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_lagoon_shallow,**th_kwargs)
 
+# Front okay.
 x_north_marsh=[552841., 4124582.]
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_north_marsh,method='gmsh')
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_north_marsh,**th_kwargs)
+
+# okay
 
 x_butano_lagoon=[552516., 4124182.]
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_lagoon,method='gmsh')
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_lagoon,**th_kwargs)
 
+# yes...
+## 
 x_butano_marsh_w=[552607., 4123680.]
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_marsh_w,method='gmsh')
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_marsh_w,**th_kwargs)
 
+# yes. fixed!
+## 
 x_butano_marsh_s=[552905., 4123225.]
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_marsh_s,method='gmsh')
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_marsh_s,**th_kwargs)
 
 g_new.write_pickle('prebug.pkl',overwrite=True)
-##
-six.moves.reload_module(unstructured_grid)
+
+## 
+# six.moves.reload_module(unstructured_grid)
 g_new=unstructured_grid.UnstructuredGrid.read_pickle('prebug.pkl')
 
-## 
-# This has another issue: there is a 'hint' edge. So far I've focused on hint
-# nodes, but if there is an edge with no cells but joining two nodes that do
-# have cells, it is getting left in the grid, and causes problems.
-six.moves.reload_module(triangulate_hole)
 x_delta_marsh=[552771., 4124233.]
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_delta_marsh,method='gmsh')
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_delta_marsh,**th_kwargs)
 
-## 
 x_delta_marsh_s=[552844., 4123945.]
-
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_delta_marsh_s,method='gmsh',
-                                        max_nodes=g_new.Nnodes())
-
-##
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_delta_marsh_s,**th_kwargs)
 
 x_pesc_roundhill=[553257., 4123782.]
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_pesc_roundhill,method='gmsh')
-
-##
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_pesc_roundhill,**th_kwargs)
 
 x_butano_se=[553560., 4123089.]
-g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_se,method='gmsh')
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_butano_se,**th_kwargs)
+
+x_nmarsh_west=[552379., 4124697.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_nmarsh_west,**th_kwargs)
+
+x_lagoon_north=[552323., 4124492.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_lagoon_north,**th_kwargs)
+
+x_lagoon_south=[552226., 4124428.]
+g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_lagoon_south,**th_kwargs)
+
+##
+g_new.write_pickle('prebug2.pkl',overwrite=True)
+
+##
+g_new=unstructured_grid.UnstructuredGrid.read_pickle('prebug2.pkl')
+
+# Need to add a few more seed points.
+for seed in [[552547., 4123962.], # butano off-channel storage
+             [552581., 4123866.], # another butano off-channel storage
+             [552596., 4123395.], # various in Butano Marsh
+             [552576., 4123458.], # Funny intersection place
+             [552746., 4123550.]]:
+    g_new=triangulate_hole.triangulate_hole(g_new,seed_point=seed,**th_kwargs)
 
 ## 
 plt.figure(1).clf()
-g_new.plot_edges(color='tab:blue',lw=1)
+g_new.plot_edges(color='tab:blue',lw=0.7)
 plt.axis('tight')
 plt.axis('equal')
+
 
 ##
 
 g_new.renumber()
-g_new.write_ugrid('quad_tri_15.nc',overwrite=True)
+g_new.write_ugrid('quad_tri_v16.nc',overwrite=True)
+
+# This finishes.
+# There a lot of places where gmsh has split edges.
+# Several things to do:
+# A The resolution smoothing in quad_laplacian should be more scale aware,
+#   so that it smooths at the level of a couple grid cells, rather than
+#   whatever arbitrary thing it's currently doing. There is probably something
+#   more clever that can be done, but this should be okay.
+
+# HERE. Something is off. Even nailing down the resolution strongly, it
+# gets smeared out much more than I'd expect.  Isolate the output of
+# patch_contour,
+
+
+# B See if front does any better. => It is getting through things slowly.a
+# C Adjust the resolutions to have smoother transitions
+# D Could post-process the spliced grid after triangulate_hole to automatically
+#   split edges.
+# 
 
