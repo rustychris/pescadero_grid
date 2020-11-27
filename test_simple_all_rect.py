@@ -183,9 +183,10 @@ g_new.write_ugrid('quad_tri_v16.nc',overwrite=True)
 # There are some spots where the grid is bunching up, but
 # no obvious issues with the code, just the inputs.
 
-
-# B See if front does any better. => It is getting through things slowly.a
 # C Adjust the resolutions to have smoother transitions
 # D Could post-process the spliced grid after triangulate_hole to automatically
 #   split edges.
-# 
+
+##
+
+# Search for places that 
