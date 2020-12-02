@@ -190,12 +190,41 @@ g_orig.plot_edges(lw=0.5,color='k')
 
 g=unstructured_grid.UnstructuredGrid.read_pickle('quads_and_lines-v17.pkl')
 
-# Fill some holes!
-th_kwargs=dict(method='gmsh')
-# th_kwargs=dict(method='front',method_kwargs=dict(reject_cc_outside_cell=False))
+# Calculate a global apollonius scale field.  Otherwise some of the
+# internal edges can't see nearby short edges, and we get mismatches.
+# This makes a chunky field, and slows down gmsh considerably.
+e2c=g.edge_to_cells(recalc=True)
 
-##
-               
+# I want edges on the boundary of the quad regions
+j_sel=(e2c.min(axis=1)<0) & (e2c.max(axis=1)>=0)
+
+# Refine this
+# This boundary doesn't care about cells, safe to use with a partial
+# grid.
+boundary=g.boundary_cycle()
+
+for a,b in zip(boundary,np.roll(boundary,-1)):
+    j=g.nodes_to_edge([a,b])
+    j_sel[j]=False
+    
+plt.figure(1).clf()
+g.plot_edges(color='k',lw=0.4)
+g.plot_edges(mask=j_sel,color='tab:red',lw=1.5)
+
+## 
+el=g.edges_length()
+ec=g.edges_center()
+
+from stompy.spatial import field
+density=field.PyApolloniusField(X=ec[j_sel],F=el[j_sel],
+                                redundant_factor=0.95)
+                                
+## 
+# Fill some holes!
+# th_kwargs=dict(method='gmsh',density=density)
+th_kwargs=dict(method='front',density=density,
+               method_kwargs=dict(reject_cc_outside_cell=True))
+
 from stompy.grid import triangulate_hole
 g_new=g
 x_north_pond=[552498., 4125123.]
@@ -228,17 +257,13 @@ g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_delta_marsh_s,**th_kw
 
 g_new.write_pickle('in-progress-v17-delta_marsh_s.pkl',overwrite=True)
 
-##
-
 #g_new=unstructured_grid.UnstructuredGrid.read_pickle('in-progress-v17-delta_marsh_s.pkl')
 #plt.figure(1).clf()
 #g_new.plot_edges()
 
-## 
 x_pesc_roundhill=[553257., 4123782.]
 g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_pesc_roundhill,**th_kwargs)
 
-## 
 x_butano_se=[553560., 4123089.]
 # This one is failing.  Probably because the tangent connection is too tricky
 # for triangulate_hole.  For now, add another edge to segment the marsh.
@@ -254,60 +279,23 @@ x_lagoon_south=[552226., 4124428.]
 g_new=triangulate_hole.triangulate_hole(g_new,seed_point=x_lagoon_south,**th_kwargs)
 
 g_new.write_pickle('in-progress-v17-lagoon_south.pkl',overwrite=True)
-## 
+
 # Need to add a few more seed points.
-for seed in [# [552547., 4123962.], # butano off-channel storage
-             # [552581., 4123866.], # another butano off-channel storage
-             # [552596., 4123395.], # various in Butano Marsh
-             # [552576., 4123458.], # Funny intersection place
+for seed in [[552547., 4123962.], # butano off-channel storage
+             [552581., 4123866.], # another butano off-channel storage
+             [552596., 4123395.], # various in Butano Marsh
+             [552576., 4123458.], # Funny intersection place
              [553116., 4123723.], # extra point in butano marsh w/ tangent
-             #[552746., 4123550.]
+             [552746., 4123550.]
 ]:
     g_new=triangulate_hole.triangulate_hole(g_new,seed_point=seed,**th_kwargs)
 
-## 
 plt.figure(1).clf()
 g_new.plot_edges(color='tab:blue',lw=0.7)
 plt.axis('tight')
 plt.axis('equal')
 
-##
-
 g_new.renumber()
-g_new.write_ugrid('quad_tri_v17.nc',overwrite=True)
+g_new.write_ugrid('quad_tri_v17frontcc.nc',overwrite=True)
 
 ##
-
-g_new=unstructured_grid.UnstructuredGrid.read_ugrid('quad_tri_v17.nc')
-
-
-## 
-if 0:
-    # Front is finishing, but has some buggy choices on the west side of
-    # the lagoon, and between the marsh_s ditch and pescadero.
-    g=unstructured_grid.UnstructuredGrid.read_pickle('quads_and_lines-v16.pkl')
-    x_lagoon_south=[552226., 4124428.]
-
-    from stompy.grid import front
-    six.moves.reload_module(front)
-    six.moves.reload_module(triangulate_hole)
-
-    AT=triangulate_hole.triangulate_hole(g,seed_point=x_lagoon_south,
-                                         return_value='front',
-                                         dry_run=True,splice=False,**th_kwargs)
-    AT.loop(17)
-
-    zoom=(552220.787580318, 552361.9916258453, 4124265.9885003227, 4124360.6047444823)
-
-    plt.figure(1).clf()
-    g.plot_edges(color='tab:red',lw=0.8)
-    AT.grid.plot_edges(lw=0.5)
-    AT.grid.plot_nodes(clip=zoom,labeler='id')
-
-    plt.axis('tight')
-    plt.axis('equal')
-    plt.axis( zoom )
-
-    # HERE:
-    #  Is this optimize problem something that can be fixed?
-
