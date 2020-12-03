@@ -224,15 +224,16 @@ th_kwargs=dict(method='front',density=density,
 from stompy.grid import triangulate_hole
 
 seed_points=[
+    [552648., 4124387.], # between N marsh and Pescadero, east side
+    [552841., 4124582.], # x_north_marsh
+    [553257., 4123782.], # x_pesc_roundhill
     [552498., 4125123.], # x_north_pond
     [552384., 4124450.], # x_lagoon_shallow
-    [552841., 4124582.], # x_north_marsh
     [552516., 4124182.], # x_butano_lagoon
     [552607., 4123680.], # x_butano_marsh_w
     [552905., 4123225.], # x_butano_marsh_s
     [552771., 4124233.], # x_delta_marsh
     [552844., 4123945.], # x_delta_marsh_s
-    [553257., 4123782.], # x_pesc_roundhill
     [553560., 4123089.], # x_butano_se
     [552379., 4124697.], # x_nmarsh_west
     [552323., 4124492.], # x_lagoon_north
@@ -265,21 +266,21 @@ for seed in seed_points:
         failures.append( result )
         
 ## 
-# 16 of 20 succeed, 4 failures.
-# 0: bad telescoping leads to doubled edge.
+# 18 of 20 succeed, 4 failures.
+# 0: bad telescoping leads to doubled edge (N Marsh)
+
 # 1: around roundhill. It's just too thin here. Can I push
-#    the quads to the boundary?
-# 2: south side of the tangent join, quad resolution doesn't match
-# 3: west n pond entry angle at n end too shallow.
+#    the quads to the boundary?  Try pushing the boundary out a bit
+#    and make it smoother. Fixed?
+# 2: south side of the tangent join, quad resolution doesn't match. Fixed?
+# 3: west n pond entry angle at n end too shallow. Fixed?
 
 plt.figure(1).clf()
-failures[3].grid.plot_edges(lw=0.7)
+failures[1].grid.plot_edges(lw=0.7)
 g_new.plot_edges(lw=0.5,alpha=0.3,color='0.6')
 plt.axis('tight')
 plt.axis('equal')
 
-##
-g_new.write_pickle('v18-successes.pkl')
 
         
 ##         
@@ -288,7 +289,11 @@ g_new.plot_edges(color='tab:brown',lw=0.7)
 plt.axis('tight')
 plt.axis('equal')
 
-g_new.renumber()
-g_new.write_ugrid('quad_tri_v18frontcc.nc',overwrite=True)
+if len(failures)==0:
+    g_new.renumber()
+    g_new.write_ugrid('quad_tri_v18frontcc.nc',overwrite=True)
+else:
+    g_new.write_pickle('v18-successes.pkl',overwrite=True)
+
 
 
