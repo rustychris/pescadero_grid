@@ -206,7 +206,6 @@ for a,b in zip(boundary,np.roll(boundary,-1)):
     j=g.nodes_to_edge([a,b])
     j_sel[j]=False
     
-## 
 el=g.edges_length()
 ec=g.edges_center()
 
@@ -214,8 +213,6 @@ from stompy.spatial import field
 density=field.PyApolloniusField(X=ec[j_sel],F=el[j_sel],
                                 redundant_factor=0.95)
                                 
-##
-
 # Fill some holes!
 # th_kwargs=dict(method='gmsh',density=density)
 th_kwargs=dict(method='front',density=density,
@@ -223,6 +220,7 @@ th_kwargs=dict(method='front',density=density,
 
 from stompy.grid import triangulate_hole
 
+##--------------------
 seed_points=[
     [552648., 4124387.], # between N marsh and Pescadero, east side
     [552841., 4124582.], # x_north_marsh
@@ -249,7 +247,6 @@ seed_points=[
 
 failures=[]
 
-## 
 g_new=g
 for seed in seed_points:
     c=g_new.select_cells_nearest(seed,inside=True)
@@ -266,23 +263,14 @@ for seed in seed_points:
         failures.append( result )
         
 ## 
-# 18 of 20 succeed, 4 failures.
-# 0: bad telescoping leads to doubled edge (N Marsh)
 
-# 1: around roundhill. It's just too thin here. Can I push
-#    the quads to the boundary?  Try pushing the boundary out a bit
-#    and make it smoother. Fixed?
-# 2: south side of the tangent join, quad resolution doesn't match. Fixed?
-# 3: west n pond entry angle at n end too shallow. Fixed?
 
 plt.figure(1).clf()
-failures[1].grid.plot_edges(lw=0.7)
-g_new.plot_edges(lw=0.5,alpha=0.3,color='0.6')
+#failures[0].grid.plot_edges(lw=0.7)
+g_new.plot_edges(lw=0.5,alpha=0.8,color='0.6')
 plt.axis('tight')
 plt.axis('equal')
 
-
-        
 ##         
 plt.figure(1).clf()
 g_new.plot_edges(color='tab:brown',lw=0.7)
@@ -297,3 +285,6 @@ else:
 
 
 
+##
+
+# TODO: too long down on Butano.  Shorten those up a bit.
