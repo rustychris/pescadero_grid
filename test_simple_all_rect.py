@@ -17,18 +17,21 @@ import stompy.plot.cmap as scmap
 
 ##
 
-from stompy.grid import triangulate_hole, orthogonalize,shadow_cdt
+from stompy.grid import triangulate_hole, orthogonalize,shadow_cdt, front
 from stompy.spatial import wkb2shp, constrained_delaunay
 
 six.moves.reload_module(unstructured_grid)
 six.moves.reload_module(exact_delaunay)
 six.moves.reload_module(constrained_delaunay)
 six.moves.reload_module(shadow_cdt)
+six.moves.reload_module(front)
 six.moves.reload_module(triangulate_hole)
 six.moves.reload_module(orthogonalize)
 six.moves.reload_module(quads)
 
-gen_src=unstructured_grid.UnstructuredGrid.read_pickle('grid_lagoon-v18.pkl')
+
+ver='v19'
+gen_src=unstructured_grid.UnstructuredGrid.read_pickle(f'grid_lagoon-{ver}.pkl')
 
 ##
 if 0:
@@ -37,96 +40,6 @@ if 0:
     plt.axis('tight')
     plt.axis('equal')
 
-##
-
-sqg=quads.SimpleQuadGen(gen_src,cells=[],
-                        nom_res=2.5,execute=False)
-sqg.execute()
-
-qg=sqg.process_one_cell(51,smooth_patch=False)
-
-@utils.add_to(qg)
-def nudge_boundaries_monotonic(self):
-    """
-    Check that boundary nodes have monotonic psi/phi, and 
-    nudge any violating nodes to be linearly interpolated between
-    the okay nodes.
-
-    Updates pp and x for offending nodes.
-    """
-    nodes_r=self.patch_elts['nodes']
-
-    for nlist,coord,sign in [ (nodes_r[:,0],1,-1),
-                              (nodes_r[:,-1],1,-1),
-                              (nodes_r[0,:],0,1),
-                              (nodes_r[-1,:],0,1)]:
-        # nlist: node indices into patch
-        # coord: which coordinate of pp to adjust
-        # sign: +1 for increasing, -1 for decreasing
-        vals=self.patch.nodes['pp'][nlist,coord]
-        if np.all(sign*np.diff(vals)>0): continue
-        
-        rigid=self.patch.nodes['rigid'][nlist]
-        # At least the rigid ones better be monotonic.
-        assert np.all(sign*np.diff(vals[rigid]))>0
-
-        i=np.arange(len(vals))
-        # each entry is the index of the next rigid node, self included.
-        i_next=i[rigid][ np.searchsorted(i[rigid],i) ]
-        # each entry is the index of the previous rigid node, self included
-        i_prev=i[rigid][::-1][ np.searchsorted(-i[rigid][::-1],-i) ]
-        assert np.all( i_prev[ i[rigid] ] == i[rigid] )
-        assert np.all( i_next[ i[rigid] ] == i[rigid] )
-
-        bad= (~rigid) & ( (sign*vals[i_prev] >= sign*vals) | (sign*vals[i_next]<=sign*vals))
-        print(bad.sum())
-        vals[bad] = np.interp(i[bad], i[~bad], vals[~bad] )
-        self.patch.nodes['pp'][nlist,coord]=vals
-        for n in nlist[bad]:
-            x=self.g_int.fields_to_xy(self.patch.nodes['pp'][n],[self.psi,self.phi],
-                                      self.patch.nodes['x'][n])
-            self.patch.nodes['x'][n]=x
-
-
-# This is failing. There is some overlap between the sets of rigid
-# nodes.  In theory, this should be fine. The choice of resolution
-# in the upper right corner might be making things worse, but
-# it should still complete.
-## 
-# qg.nudge_boundaries_monotonic() # seems to work
-
-# The smoothing is problematic.  It operates on displacements,
-# so doesn't "know" that there is a kink.  And the anisotropy
-# means that bad spacing along the boundary gets projected
-# along contours.
-# Hack solution is to decrease anisotropy until boundaries are
-# monotonic.
-
-qg.smooth_patch_psiphi_implicit()
-
-pp_r=qg.patch.nodes['pp'][qg.patch_elts['nodes']]
-psi_mono=np.all(np.diff(pp_r[:,:,0],axis=1)>0)
-phi_mono=np.all(np.diff(pp_r[:,:,1],axis=0)<0)
-
-
-## 
-plt.figure(1).clf()
-
-#qg.g_final.plot_edges(lw=3,alpha=0.3)
-qg.patch.plot_edges()
-
-#plt.plot( qg.left_j[:,0], qg.left_j[:,1], 'g-o')
-#plt.plot( qg.right_j[:,0], qg.right_j[:,1], 'g-o')
-
-# The unsmoothed patch doubles back on itself on the left.
-# Try a pass between position_patch_nodes and smooth, that
-# enforces monotonicity along the boundary.
-
-plt.axis('tight')
-plt.axis('equal')
-plt.axis( (552557.885928849, 552622.3543178033, 4124415.7229523533, 4124463.7623002506) )
-
-            
 ## 
 sqg=quads.SimpleQuadGen(gen_src,cells=list(gen_src.valid_cell_iter()),
                         nom_res=2.5,execute=False)
@@ -136,10 +49,10 @@ sqg.execute()
 g=sqg.g_final
 g.renumber()
 
-g.write_pickle('all-quads-v18.pkl',overwrite=True)
+g.write_pickle(f'all-quads-{ver}.pkl',overwrite=True)
 
 ## 
-g=unstructured_grid.UnstructuredGrid.read_pickle('all-quads-v18.pkl')
+g=unstructured_grid.UnstructuredGrid.read_pickle(f'all-quads-{ver}.pkl')
 
 # Add the non-cell edges of gen_src back into g:
 gen_src_tri=gen_src.copy()
@@ -180,7 +93,7 @@ g.renumber(reorient_edges=False)
 
 g_orig=g
 
-g_orig.write_pickle('quads_and_lines-v18.pkl',overwrite=True)
+g_orig.write_pickle(f'quads_and_lines-{ver}.pkl',overwrite=True)
 ##
 
 plt.figure(1).clf()
@@ -188,7 +101,7 @@ g_orig.plot_edges(lw=0.5,color='k')
 
 ##
 
-g=unstructured_grid.UnstructuredGrid.read_pickle('quads_and_lines-v18.pkl')
+g=unstructured_grid.UnstructuredGrid.read_pickle(f'quads_and_lines-{ver}.pkl')
 
 # Calculate a global apollonius scale field.  Otherwise some of the
 # internal edges can't see nearby short edges, and we get mismatches.
@@ -220,8 +133,19 @@ th_kwargs=dict(method='front',density=density,
 
 from stompy.grid import triangulate_hole
 
+##
+six.moves.reload_module(front)
+six.moves.reload_module(triangulate_hole)
+
+if 0: # Debugging bad slides
+    seed=[552596., 4123395.] # South of nexus in Butano marsh
+    AT=triangulate_hole.triangulate_hole(g,seed_point=seed,dry_run=True,
+                                         return_value='front',splice=False,
+                                         **th_kwargs)
+
 ##--------------------
 seed_points=[
+    [552596., 4123395.], # various in Butano Marsh. Fails if too late in the sequence
     [552648., 4124387.], # between N marsh and Pescadero, east side
     [552841., 4124582.], # x_north_marsh
     [553257., 4123782.], # x_pesc_roundhill
@@ -229,8 +153,8 @@ seed_points=[
     [552384., 4124450.], # x_lagoon_shallow
     [552516., 4124182.], # x_butano_lagoon
     [552607., 4123680.], # x_butano_marsh_w
-    [552905., 4123225.], # x_butano_marsh_s
-    [552771., 4124233.], # x_delta_marsh
+    [552905., 4123225.], # x_butano_marsh_s # This is segfaulting!!
+    [552771., 4124233.], # F x_delta_marsh
     [552844., 4123945.], # x_delta_marsh_s
     [553560., 4123089.], # x_butano_se
     [552379., 4124697.], # x_nmarsh_west
@@ -238,7 +162,6 @@ seed_points=[
     [552226., 4124428.], # x_lagoon_south
     [552547., 4123962.], # butano off-channel storage
     [552581., 4123866.], # another butano off-channel storage
-    [552596., 4123395.], # various in Butano Marsh
     [552576., 4123458.], # Funny intersection place
     [553116., 4123723.], # extra point in butano marsh w/ tangent
     [552746., 4123550.], # butano between old and new.
@@ -249,9 +172,10 @@ failures=[]
 
 g_new=g
 for seed in seed_points:
+    print("-------------- %s ---------------"%str(seed))
     c=g_new.select_cells_nearest(seed,inside=True)
     if c is not None:
-        print("Point %s already filled"%seed)
+        print("Point already filled"%seed)
         continue
     print("Will fill this one")
 
@@ -264,9 +188,12 @@ for seed in seed_points:
         
 ## 
 
+# failures[0]: the sting, where it's more or less doomed
+# failures[1]: around butano marsh nexus. Is scale not strong enough?
 
+##
 plt.figure(1).clf()
-#failures[0].grid.plot_edges(lw=0.7)
+failures[1].grid.plot_edges(lw=0.7)
 g_new.plot_edges(lw=0.5,alpha=0.8,color='0.6')
 plt.axis('tight')
 plt.axis('equal')
@@ -279,12 +206,19 @@ plt.axis('equal')
 
 if len(failures)==0:
     g_new.renumber()
-    g_new.write_ugrid('quad_tri_v18frontcc.nc',overwrite=True)
+    g_new.write_ugrid(f'quad_tri_{ver}frontcc.nc',overwrite=True)
 else:
-    g_new.write_pickle('v18-successes.pkl',overwrite=True)
-
+    g_new.write_pickle(f'{ver}-successes.pkl',overwrite=True)
 
 
 ##
 
-# TODO: too long down on Butano.  Shorten those up a bit.
+# Had to add a few cells manually at the sting. Could hard-code that
+# in.  Sort of annoying.
+
+g=unstructured_grid.UnstructuredGrid.read_ugrid('quad_tri_v19frontcc.nc')
+
+##
+
+# Automatically adjust for orthogonality:
+
