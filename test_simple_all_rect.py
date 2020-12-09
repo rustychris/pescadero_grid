@@ -215,10 +215,173 @@ else:
 
 # Had to add a few cells manually at the sting. Could hard-code that
 # in.  Sort of annoying.
-
+six.moves.reload_module(unstructured_grid)
+six.moves.reload_module(orthogonalize)
+    
 g=unstructured_grid.UnstructuredGrid.read_ugrid('quad_tri_v19frontcc.nc')
+
+# Automatically adjust for orthogonality:
+tweaker=orthogonalize.Tweaker(g=g)
+tweaker.merge_all_by_edge_clearance()
+# That merges a bunch.  Probably too many.
+
+tweaker.nudge_all_orthogonal()
+
+
+## 
+plt.figure(1).clf()
+
+coll=g.plot_edges(values=bad_edges2,cmap='jet_r',clim=[0,0.25])
+
+bad_cells=np.unique( [ g.edge_to_cells(j) for j in np.nonzero(bad_edges<0.05)[0]] )
+bad_cells=bad_cells[ bad_cells>=0 ]
+
+cc=g.cells_center()
+plt.colorbar(coll)
+
+plt.plot( cc[bad_cells,0], cc[bad_cells,1], 'g.')
+
+plt.axis('tight')
+plt.axis('equal')
+
+
+## 
+# Starts at 38.  It fixes all of the edges, but
+# at cost of orthogonality.
+bad_edges=g.edge_clearance(recalc_e2c=True)<0.05
+print(f"Bad edges: {bad_edges.sum()}/{len(bad_edges)}")
+
+for j in np.nonzero(bad_edges)[0]:
+    print(j)
+    tweaker.adjust_for_edge_quality(j)
+
+##
+# this works out okay, but the cells look kind of crappy.
+tweaker.nudge_all_orthogonal()
+    
+## 
+
+
+# And short edges:
+# Testing..
+# zoom=(552529.6383148731, 552547.6935756239, 4124310.2765580793, 4124320.431186181)
+# edge_mask=np.nonzero(g.edge_clip_mask(zoom))[0]
+
+zoom=(552484.5867645434, 552515.8451034953, 4124264.0836399, 4124287.376144087)
+def figure_quality(num=2):
+    edge_quality=g.edge_clearance(recalc_e2c=True)
+    cell_errors=g.circumcenter_errors(radius_normalized=True)
+    thresh_single_sided=0.05
+
+    e2c=g.edge_to_cells()
+    cc=g.cells_center()
+
+    bad_edges=edge_quality<thresh_single_sided
+
+    plt.figure(num).clf()
+    g.plot_edges(color='0.7',lw=0.6)
+    if np.any(bad_edges):
+        g.plot_edges(mask=bad_edges,values=edge_quality,cmap='jet',clim=[0,0.1])
+
+        bad_cells=np.unique(e2c[bad_edges>0,:].ravel())
+        bad_cells=bad_cells[bad_cells>=0]
+        plt.plot( cc[bad_cells,0],cc[bad_cells,1],'g.')
+
+    g.plot_cells(values=cell_errors,clim=[0,0.03],cmap='copper_r')
+
+    plt.axis('tight')
+    plt.axis('equal')
+    plt.axis(zoom)
+
+figure_quality(2)
+
+# Options for dealing with bad edges:
+#  Adjust nodes in the area with a cost function based on
+#   the above metrics. Hopefully without disrupting orthogonality
+#   too much.
+#  When circumcenters are almost coincident, can merge cells.
+## 
+
+@utils.add_to(tweaker)
+def adjust_for_edge_quality(self,j,expand=True):
+    """
+    Adjust node positions to improve edge quality
+    for edge j.
+
+    expand: False => adjust nodes of j, and adjacent cells
+     True => adjust nodes one ring out from there
+    """
+    g=self.g
+    
+    # First, decide the set of nodes that will be modified
+    nodes=np.unique([g.cell_to_nodes(c)
+                     for c in g.edge_to_cells(j)] )
+    if expand:
+        n_orig=len(nodes)
+        nodes=np.unique( np.concatenate( [g.node_to_nodes(n) for n in nodes] ) )
+        # print(f"Increasing neighborhood {n_orig} to {len(nodes)}")
+
+    # Then what cells will be modified by moving those nodes:
+    adj_cells=np.unique( np.concatenate([g.node_to_cells(n) for n in nodes] ))
+    # And the adjacent edges that might have their quality affected
+    adj_edges=np.unique( np.concatenate([g.cell_to_edges(c) for c in adj_cells]) )
+
+    # Choose a central point to recenter the optimization
+    x0=g.nodes['x'][nodes].mean(axis=0)
+
+    # Make sure grid topology is good
+    g.edge_to_cells(e=adj_edges)
+    # g.cells_area()
+
+    def cost(X,adj_cells=adj_cells,adj_edges=adj_edges,x0=x0):
+        # recenter to give fmin a clue on scale
+        g.nodes['x'][nodes] = x0 + X.reshape( (len(nodes),2) )
+
+        cc=g.cells_center(refresh=adj_cells) # returns all cells
+        g.cells['_area'][adj_cells]=np.nan
+        g.cells_area(sel=adj_cells) # only returns the selected cells
+        Ac=g.cells['_area']
+
+        # For cell errors, small is good.
+        cell_errors=g.circumcenter_errors(cells=adj_cells,radius_normalized=True,
+                                          cc=cc)
+        # For edge errors, small is bad, and it can be negative. Flip sign.
+        edge_errors=-g.edge_clearance(adj_edges,cc=cc,Ac=Ac)
+
+        # A 'bad' cell is >=0.04 or so.
+        # A 'bad' edge is >=-0.05 or so.
+        cost=cell_errors.max()/0.04 + edge_errors.max()/0.05
+
+        return cost
+
+    # backups=dict(edges=g.edges.copy(),
+    #              cells=g.cells.copy(),
+    #              nodes=g.nodes.copy())
+
+    X_init=(g.nodes['x'][nodes] - x0).ravel()
+    cost(X_init) # make sure we leave the grid in the best state
+
+    from scipy.optimize import fmin
+
+    X=fmin(cost,X_init)
+    final_cost=cost(X)
+
+tweaker.adjust_for_edge_quality(j=106719,expand=True)
+    
+
+
+## 
+# Down to 33s, 16s in cells_area. and 11s in edge_clearance
+# and down to 3s or so with fmin instead of powell.
+
+figure_quality(2)
+g.plot_nodes(mask=nodes,color='k')
+plt.axis(zoom)
 
 ##
 
-# Automatically adjust for orthogonality:
+# HERE: working.
+# Port to orthogonalize, wrap it up.
+# apply to bad edges.
+# explore pre/post step to join to quad.
 
