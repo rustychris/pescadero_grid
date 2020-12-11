@@ -64,7 +64,7 @@ seed_points=[
     [552841., 4124582.], # x_north_marsh
     [553257., 4123782.], # x_pesc_roundhill
     [552498., 4125123.], # x_north_pond
-    [552384., 4124450.], # x_lagoon_shallow
+    [552425., 4124450.], # x_lagoon_shallow
     [552516., 4124182.], # x_butano_lagoon
     [552607., 4123680.], # x_butano_marsh_w
     [552771., 4124233.], # x_delta_marsh
@@ -84,11 +84,12 @@ seed_points=[
 ##
 
 # With reject_cc_distance_factor=0.15, skipped 1 due to segfault, and 3 others fail.
-failures=[]
+all_failures=[]
 
 for dist_fact in [0.15, 0.10,None]:
     th_kwargs['method_kwargs']['reject_cc_distance_factor']=dist_fact
     g_new=g
+    failures=[]
     for seed in seed_points:
         print("-------------- %s ---------------"%str(seed))
         c=g_new.select_cells_nearest(seed,inside=True)
@@ -102,7 +103,8 @@ for dist_fact in [0.15, 0.10,None]:
             g_new=result
         else:
             print("-----Fail on point: %s-----"%seed)
-            failures.append( result )
+            failures.append(result)
+            all_failures.append(result)
         
 ## 
 
@@ -117,17 +119,22 @@ if 0:
     plt.colorbar(coll)
 else:
     coll=g_new.plot_edges(color='0.5',lw=0.7)
+
+xy=np.array(seed_points)
+plt.plot( xy[:,0],xy[:,1], 'go')
+
 plt.axis('tight')
 plt.axis('equal')
 
-##         
+##
+
 plt.figure(1).clf()
 g_new.plot_edges(color='tab:brown',lw=0.7)
 plt.axis('tight')
 plt.axis('equal')
 
 ## 
-if len(failures)==0:
+if len(failures)==0: 
     g_new.renumber()
     g_new.write_ugrid(f'quad_tri_{ver}frontcc.nc',overwrite=True)
 else:
