@@ -1,7 +1,7 @@
 from matplotlib import collections
 from collections import defaultdict
 import stompy.grid.quad_laplacian as quads
-from stompy.grid import exact_delaunay, unstructured_grid
+from stompy.grid import  unstructured_grid
 import matplotlib.pyplot as plt
 import six
 from stompy import utils,filters
@@ -142,7 +142,8 @@ else:
 
 
 ##
-
+from stompy.grid import unstructured_grid
+import six
 # Had to add a few cells manually at the sting. Could hard-code that
 # in.  Sort of annoying.
 six.moves.reload_module(unstructured_grid)
@@ -226,8 +227,6 @@ def figure_quality(num=2):
 figure_quality(2)
 
 
-tweaker.adjust_for_edge_quality(j=106719,expand=True)
-    
 
 ##
 
@@ -238,4 +237,5 @@ plt.axis(zoom)
 ##
 
 
-
+g.renumber()
+g.write_ugrid('quad_tri_v19frontcc-opt.nc')
