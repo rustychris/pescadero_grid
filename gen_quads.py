@@ -30,18 +30,19 @@ six.moves.reload_module(orthogonalize)
 six.moves.reload_module(quads)
 
 
-ver='v19'
+ver='v20'
 gen_src=unstructured_grid.UnstructuredGrid.read_pickle(f'grid_lagoon-{ver}.pkl')
 
+
 ##
-if 0:
+if 1:
     plt.figure(10).clf()
     gen_src.plot_cells(labeler='id',centroid=True)
     plt.axis('tight')
     plt.axis('equal')
 
 ## 
-sqg=quads.SimpleQuadGen(gen_src,cells=list(gen_src.valid_cell_iter()),
+sqg=quads.SimpleQuadGen(gen_src,list(gen_src.valid_cell_iter()),
                         nom_res=2.5,execute=False)
 sqg.execute()
 
